@@ -1,0 +1,116 @@
+<ui version="4.0" >
+  <class>CDRipperOptionsPage</class>
+  <widget class="QWidget" name="CDRipperOptionsPage" >
+    <property name="geometry" >
+      <rect>
+        <x>0</x>
+        <y>0</y>
+        <width>300</width>
+        <height>300</height>
+      </rect>
+    </property>
+    <layout class="QVBoxLayout" >
+      <property name="margin" >
+        <number>9</number>
+      </property>
+      <property name="spacing" >
+        <number>6</number>
+      </property>
+      <item>
+        <widget class="QGroupBox" name="media_library_info" >
+          <property name="title" >
+            <string>Library options</string>
+          </property>
+          <layout class="QVBoxLayout" >
+            <property name="margin" >
+              <number>9</number>
+            </property>
+            <property name="spacing" >
+              <number>2</number>
+            </property>
+            <item>
+              <widget class="QLabel" name="library_path_label" >
+                <property name="text" >
+                  <string>Base path for ripped media:</string>
+                </property>
+              </widget>
+            </item>
+            <item>
+              <widget class="QLineEdit" name="library_path" />
+            </item>
+          </layout>
+        </widget>
+      </item>
+      <item>
+        <widget class="QGroupBox" name="cdparanoia_options" >
+          <property name="title" >
+            <string>cdparanoia</string>
+          </property>
+          <layout class="QVBoxLayout" >
+            <property name="margin" >
+              <number>9</number>
+            </property>
+            <property name="spacing" >
+              <number>2</number>
+            </property>
+            <item>
+              <widget class="QLabel" name="cdparanoia_opts_label" >
+                <property name="text" >
+                  <string>Command line options:</string>
+                </property>
+              </widget>
+            </item>
+            <item>
+              <widget class="QLineEdit" name="cdparanoia_opts" />
+            </item>
+          </layout>
+        </widget>
+      </item>
+      <item>
+        <widget class="QGroupBox" name="flac_options" >
+          <property name="title" >
+            <string>flac</string>
+          </property>
+          <layout class="QVBoxLayout" >
+            <property name="margin" >
+              <number>9</number>
+            </property>
+            <property name="spacing" >
+              <number>2</number>
+            </property>
+            <item>
+              <widget class="QLabel" name="flac_opts_label" >
+                <property name="text" >
+                  <string>Command line options:</string>
+                </property>
+              </widget>
+            </item>
+            <item>
+              <widget class="QLineEdit" name="flac_opts" />
+            </item>
+          </layout>
+        </widget>
+      </item>
+      <item>
+        <spacer>
+          <property name="orientation" >
+            <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" >
+            <size>
+              <width>281</width>
+              <height>20</height>
+            </size>
+          </property>
+        </spacer>
+      </item>
+    </layout>
+  </widget>
+  <tabstops>
+    <tabstop>cdparanoia_opts</tabstop>
+    <tabstop>flac_opts</tabstop>
+  </tabstops>
+  <resources/>
+  <connections/>
+</ui>
+
