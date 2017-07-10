@@ -4,7 +4,7 @@ PLUGIN_NAME = u'CD Ripper'
 PLUGIN_AUTHOR = u'Dan Lange'
 PLUGIN_DESCRIPTION = u'Rips CDs and encodes to FLAC.'
 PLUGIN_VERSION = '0.1'
-PLUGIN_API_VERSIONS = ['0.15']
+PLUGIN_API_VERSIONS = ['0.15', '2.0']
 
 
 import os
