@@ -13,12 +13,11 @@ from PyQt5.QtWidgets import QDialog
 from picard import formats
 from picard.config import TextOption
 from picard.disc import Disc
+from picard.plugins.cdripper import ui
+from picard.plugins.cdripper import ui_options_cdripper
 from picard.ui.itemviews import BaseAction, register_album_action
 from picard.ui.options import OptionsPage, register_options_page
 from picard.util import encode_filename, sanitize_filename
-
-ui_options_cdripper = __loader__.load_module('ui_options_cdripper')
-ui = __loader__.load_module('ui')
 
 
 PLUGIN_NAME = u'CD Ripper'
