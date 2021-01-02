@@ -24,7 +24,7 @@ ui = __loader__.load_module('ui')
 PLUGIN_NAME = u'CD Ripper'
 PLUGIN_AUTHOR = u'Dan Lange'
 PLUGIN_DESCRIPTION = u'Rips CDs and encodes to FLAC.'
-PLUGIN_VERSION = '0.1'
+PLUGIN_VERSION = '0.2'
 PLUGIN_API_VERSIONS = ['0.15', '2.0']
 
 
@@ -108,10 +108,10 @@ class CDRipper(QtCore.QObject):
 
     opts = self.config.setting['cdripper_flac_opts']
     for track in self.album.tracks:
-      if self.discid not in track.metadata['~discids']:
-        self.log.debug(
+      if self.discid not in track.metadata['~musicbrainz_discids']:
+        self.log.error(
             'discid %s not found in %r',
-            self.discid, track.metadata['~discids'])
+            self.discid, track.metadata['~musicbrainz_discids'])
         continue  # Track is not part of this disc.
 
       self._expected_num_tracks += 1
