@@ -24,7 +24,7 @@ ui = __loader__.load_module('ui')
 PLUGIN_NAME = u'CD Ripper'
 PLUGIN_AUTHOR = u'Dan Lange'
 PLUGIN_DESCRIPTION = u'Rips CDs and encodes to FLAC.'
-PLUGIN_VERSION = '0.2'
+PLUGIN_VERSION = '0.2.1'
 PLUGIN_API_VERSIONS = ['0.15', '2.0']
 
 
@@ -165,9 +165,11 @@ class CDRipper(QtCore.QObject):
   def readStdOut(self):
     for process in self._processes:
       if self._ripping:
-        self.widget.ui.rip_output.appendPlainText(str(process.readAll()))
+        self.widget.ui.rip_output.appendPlainText(
+            str(process.readAll(), 'utf-8'))
       else:
-        self.widget.ui.encode_output.appendPlainText(str(process.readAll()))
+        self.widget.ui.encode_output.appendPlainText(
+            str(process.readAll(), 'utf-8'))
 
 
 class CDRipperOptionsPage(OptionsPage):
