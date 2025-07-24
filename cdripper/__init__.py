@@ -71,17 +71,19 @@ class CDRipper(QtCore.QObject):
     if result == self.widget.Rejected:
       self._cleanup()
 
-  def _newProcess(self):
+  def _newProcess(self, output_widget):
     process = QtCore.QProcess()
     process.setWorkingDirectory(self._tmpdir)
     process.setProcessChannelMode(process.MergedChannels)
     process.setReadChannel(process.StandardOutput)
     process.error.connect(self.errorHandler)
-    process.readyReadStandardOutput.connect(self.readStdOut)
+    # Connect output directly to the correct widget
+    process.readyReadStandardOutput.connect(
+        lambda p=process, w=output_widget: w.appendPlainText(str(p.readAll(), 'utf-8')))
     return process
 
   def rip(self):
-    process = self._newProcess()
+    process = self._newProcess(self.widget.ui.rip_output)
     self._processes.append(process)
     process.started.connect(self.ripStarted)
     process.finished.connect(self.ripFinished)
@@ -121,7 +123,7 @@ class CDRipper(QtCore.QObject):
       flac_path = os.path.join(self._tmpdir, flac_name)
       args = opts.split() + ['-o', flac_path, wav_path]
 
-      process = self._newProcess()
+      process = self._newProcess(self.widget.ui.encode_output)
       process.finished.connect(self.encodeFinished)
       process.start('/usr/bin/flac', args)
       self._processes.append(process)
@@ -160,15 +162,6 @@ class CDRipper(QtCore.QObject):
       shutil.rmtree(self._tmpdir)
     except OSError:
       pass
-
-  def readStdOut(self):
-    for process in self._processes:
-      if self._ripping:
-        self.widget.ui.rip_output.appendPlainText(
-            str(process.readAll(), 'utf-8'))
-      else:
-        self.widget.ui.encode_output.appendPlainText(
-            str(process.readAll(), 'utf-8'))
 
 
 class CDRipperOptionsPage(OptionsPage):
