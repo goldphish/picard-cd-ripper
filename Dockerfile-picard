@@ -1,0 +1,5 @@
+FROM jlesage/musicbrainz-picard:latest
+
+RUN apk add --no-cache cdparanoia flac
+
+COPY cdripper.zip /defaults/config/MusicBrainz/Picard/plugins/
