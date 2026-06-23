@@ -13,16 +13,23 @@ except ImportError:
     _HAS_NATIVE = False
 
 
+LEAD_IN = 150  # standard 2-second (150-sector) lead-in
+
+
 def compute_disc_ids(disc):
-    """Return (id1, id2, cddb_id) for an AccurateRip URL from a discid.Disc object."""
-    offsets = [t.offset for t in disc.tracks]
-    leadout = disc.sectors
+    """Return (id1, id2, cddb_id) for an AccurateRip URL from a discid.Disc object.
+
+    discid reports absolute LBAs (including the 150-sector lead-in), but the
+    AccurateRip DiscIDs are computed from 0-based offsets (lba - 150).
+    """
+    offsets = [t.offset - LEAD_IN for t in disc.tracks]
+    leadout = disc.sectors - LEAD_IN
     n = len(offsets)
 
     id1 = (sum(offsets) + leadout) & 0xFFFFFFFF
     id2 = (
         sum(max(offsets[i], 1) * (i + 1) for i in range(n))
-        + max(leadout, 1) * (n + 1)
+        + leadout * (n + 1)
     ) & 0xFFFFFFFF
     cddb_id = int(disc.freedb_id, 16)
 
