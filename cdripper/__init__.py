@@ -21,9 +21,9 @@ from picard.util import encode_filename, sanitize_filename
 
 PLUGIN_NAME = 'CD Ripper'
 PLUGIN_AUTHOR = 'Dan Lange'
-PLUGIN_DESCRIPTION = 'Rips CDs and encodes to FLAC, with AccurateRip verification.'
-PLUGIN_VERSION = '0.4.0'
-PLUGIN_API_VERSIONS = ['0.15', '2.0', '2.7', '2.13']
+PLUGIN_DESCRIPTION = 'Rips CDs and encodes to FLAC.'
+PLUGIN_VERSION = '0.3.2'
+PLUGIN_API_VERSIONS = ['0.15', '2.0', '2.7', '3.0']
 PLUGIN_LICENSE = 'GPL-2.0-or-later'
 PLUGIN_LICENSE_URL = 'https://www.gnu.org/licenses/gpl-2.0.html'
 
