@@ -2,4 +2,6 @@ FROM jlesage/musicbrainz-picard:latest
 
 RUN apk add --no-cache cdparanoia flac
 
-COPY cdripper.zip /defaults/config/MusicBrainz/Picard/plugins/
+COPY MANIFEST.toml __init__.py ui.py ui_options_cdripper.py /opt/picard-cd-ripper/
+COPY docker/56-cdripper-plugin.sh /etc/cont-init.d/
+RUN chmod +x /etc/cont-init.d/56-cdripper-plugin.sh
