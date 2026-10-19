@@ -1,0 +1,18 @@
+uuid = "6911640e-7484-4b8c-acea-811aa007397f"
+name = "CD Ripper"
+description = "Rips CDs and encodes to FLAC."
+long_description = """
+Adds a "Rip CD..." action to the album context menu. The disc in the
+configured CD lookup drive is ripped with cdparanoia, each track is encoded
+to FLAC, and the resulting files are attached to the matching tracks of the
+selected album.
+
+Requires the `cdparanoia` and `flac` command line tools in `/usr/bin`.
+"""
+version = "1.0.0"
+api = ["3.0"]
+authors = ["Dan Lange"]
+license = "GPL-2.0-or-later"
+license_url = "https://www.gnu.org/licenses/gpl-2.0.html"
+homepage = "https://github.com/goldphish/picard-cd-ripper"
+report_bugs_to = "https://github.com/goldphish/picard-cd-ripper/issues"

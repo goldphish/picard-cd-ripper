@@ -5,26 +5,21 @@ import shutil
 import tempfile
 from typing import Any, Optional
 
-from PyQt5 import QtCore
-from PyQt5.QtWidgets import QDialog
-from PyQt5.QtCore import pyqtSignal, QObject
+from PyQt6 import QtCore
+from PyQt6.QtWidgets import QDialog
 
-from picard import formats
-from picard.config import TextOption
 from picard.disc import Disc
-from picard.plugins.cdripper import ui
-from picard.plugins.cdripper import ui_options_cdripper
-from picard.ui.itemviews import BaseAction, register_album_action
-from picard.ui.options import OptionsPage, register_options_page
-from picard.util import encode_filename, sanitize_filename
+from picard.plugin3.api import BaseAction, OptionsPage, PluginApi
+from picard.util import sanitize_filename
 
-PLUGIN_NAME = 'CD Ripper'
-PLUGIN_AUTHOR = 'Dan Lange'
-PLUGIN_DESCRIPTION = 'Rips CDs and encodes to FLAC.'
-PLUGIN_VERSION = '0.3.2'
-PLUGIN_API_VERSIONS = ['0.15', '2.0', '2.7', '3.0']
-PLUGIN_LICENSE = 'GPL-2.0-or-later'
-PLUGIN_LICENSE_URL = 'https://www.gnu.org/licenses/gpl-2.0.html'
+from . import ui
+from . import ui_options_cdripper
+
+DEFAULT_OPTIONS = {
+    'cdparanoia_opts': '--batch 1:-',
+    'flac_opts': '--verify --replay-gain --delete-input-file',
+}
+
 
 class RipCDDialog(QDialog):
     """Dialog for the CD Ripper UI."""
@@ -33,19 +28,24 @@ class RipCDDialog(QDialog):
         self.ui = ui.Ui_CDRipperUI()
         self.ui.setupUi(self)
 
+
 class RipCD(BaseAction):
     """Album action to start the CD ripper."""
-    NAME = '&Rip CD...'
+    TITLE = '&Rip CD...'
 
     def callback(self, objs: list) -> None:
         """Callback to start the CD ripper for the selected album."""
         album = objs[0]
-        CDRipper(album).run()
+        CDRipper(self.api, album).run()
+
 
 class CDRipper(QtCore.QObject):
     """Main class for handling CD ripping and encoding."""
-    def __init__(self, album: Any) -> None:
+    def __init__(self, api: PluginApi, album: Any) -> None:
         super().__init__()
+        self.api = api
+        self.tagger = api.tagger
+        self.log = api.logger
         self.album = album
         self.discid: Optional[str] = None
         self._ripping: bool = False
@@ -62,29 +62,29 @@ class CDRipper(QtCore.QObject):
 
     def run(self) -> None:
         """Run the CD ripper dialog and start the ripping process."""
-        device = self.config.setting["cd_lookup_device"].split(",", 1)[0]
+        device = self.api.global_config.setting["cd_lookup_device"].split(",", 1)[0]
         disc = Disc()
-        disc.read(encode_filename(device))
+        disc.read(device)
         self.discid = disc.id
         self.log.debug(f'CD has discid: {disc.id}')
         self.rip()
-        result = self.widget.exec_()
-        if result == self.widget.Rejected:
+        result = self.widget.exec()
+        if result == QDialog.DialogCode.Rejected:
             self._cleanup()
 
     def _newProcess(self, output_widget: Any) -> QtCore.QProcess:
         """Create a new QProcess for running external commands."""
         process = QtCore.QProcess()
         process.setWorkingDirectory(self._tmpdir)
-        process.setProcessChannelMode(process.MergedChannels)
-        process.setReadChannel(process.StandardOutput)
-        process.error.connect(self.errorHandler)
+        process.setProcessChannelMode(QtCore.QProcess.ProcessChannelMode.MergedChannels)
+        process.setReadChannel(QtCore.QProcess.ProcessChannel.StandardOutput)
+        process.errorOccurred.connect(self.errorHandler)
         # Connect output directly to the correct widget
         process.readyReadStandardOutput.connect(
-            lambda p=process, w=output_widget: w.appendPlainText(str(p.readAll(), 'utf-8')))
+            lambda p=process, w=output_widget: w.appendPlainText(_decode(p.readAll())))
         # Ensure all output is flushed on finish
         process.finished.connect(
-            lambda *_, p=process, w=output_widget: w.appendPlainText(str(p.readAll(), 'utf-8')))
+            lambda *_, p=process, w=output_widget: w.appendPlainText(_decode(p.readAll())))
         return process
 
     def rip(self) -> None:
@@ -93,7 +93,7 @@ class CDRipper(QtCore.QObject):
         self._processes.append(process)
         process.started.connect(self.ripStarted)
         process.finished.connect(self.ripFinished)
-        opts = self.config.setting['cdripper_cdparanoia_opts']
+        opts = self.api.plugin_config['cdparanoia_opts']
         self.log.debug(f'Using tmp dir: {self._tmpdir}')
         process.start('/usr/bin/cdparanoia', opts.split())
 
@@ -104,10 +104,10 @@ class CDRipper(QtCore.QObject):
         self.widget.ui.rip_output.appendPlainText('Ripping CD...')
         self.widget.ui.finished_button.setDisabled(True)
 
-    def ripFinished(self, _: Any, status: int) -> None:
+    def ripFinished(self, _: Any, status: QtCore.QProcess.ExitStatus) -> None:
         """Handler for when ripping finishes."""
         self._ripping = False
-        if status != QtCore.QProcess.CrashExit:
+        if status != QtCore.QProcess.ExitStatus.CrashExit:
             self.log.debug('Rip finished; starting encode.')
             self.widget.ui.rip_output.appendPlainText('CD ripping complete!')
             self.encode()
@@ -116,7 +116,7 @@ class CDRipper(QtCore.QObject):
         """Start the encoding process for all tracks using flac."""
         self.widget.ui.encode_output.appendPlainText('Encoding CD...')
 
-        opts = self.config.setting['cdripper_flac_opts']
+        opts = self.api.plugin_config['flac_opts']
         for track in self.album.tracks:
             if self.discid not in track.metadata['~musicbrainz_discids']:
                 self.log.error(
@@ -143,10 +143,12 @@ class CDRipper(QtCore.QObject):
         self._encode_process_count -= 1
         if self._encode_process_count == 0:
             for path, track in self._flac_files:
-                f = formats.open_(path)
-                f.parent = track
+                f = self.tagger.format_registry.open(path)
+                if f is None:
+                    self.log.error(f'Could not open encoded file: {path}')
+                    continue
                 self.tagger.files[path] = f
-                track.add_file(f)
+                f.move(track)
                 f.load(lambda *_, **__: True)
 
             if len(self._flac_files) != self._expected_num_tracks:
@@ -158,7 +160,7 @@ class CDRipper(QtCore.QObject):
             self.widget.ui.finished_button.setEnabled(True)
             self._tmpdir = tempfile.mkdtemp()
 
-    def errorHandler(self, error: Any) -> None:
+    def errorHandler(self, error: QtCore.QProcess.ProcessError) -> None:
         """Handler for process errors."""
         msg = f'Ripping/Encoding failed: {error}'
         self.log.debug(msg)
@@ -167,12 +169,18 @@ class CDRipper(QtCore.QObject):
     def _cleanup(self) -> None:
         """Clean up all running processes and temporary files."""
         for process in self._processes:
-            if not process.atEnd():
+            if process.state() != QtCore.QProcess.ProcessState.NotRunning:
                 process.kill()
         try:
             shutil.rmtree(self._tmpdir)
         except OSError as e:
             self.log.debug(f'Failed to remove temp dir: {e}')
+
+
+def _decode(data: QtCore.QByteArray) -> str:
+    """Decode process output, tolerating invalid UTF-8."""
+    return bytes(data).decode('utf-8', errors='replace')
+
 
 class CDRipperOptionsPage(OptionsPage):
     """Options page for the CD Ripper plugin."""
@@ -180,29 +188,35 @@ class CDRipperOptionsPage(OptionsPage):
     TITLE = 'CD Ripper'
     PARENT = 'plugins'
 
-    options = [
-        TextOption('setting', 'cdripper_cdparanoia_opts', '--batch 1:-'),
-        TextOption(
-            'setting', 'cdripper_flac_opts',
-            '--verify --replay-gain --delete-input-file'),
-    ]
-
     def __init__(self, parent: Optional[Any] = None) -> None:
-        super().__init__()
+        super().__init__(parent)
         self.ui = ui_options_cdripper.Ui_CDRipperOptionsPage()
         self.ui.setupUi(self)
 
     def load(self) -> None:
         """Load settings into the options UI."""
-        self.ui.cdparanoia_opts.setText(
-            self.config.setting['cdripper_cdparanoia_opts'])
-        self.ui.flac_opts.setText(self.config.setting['cdripper_flac_opts'])
+        self.ui.cdparanoia_opts.setText(self.api.plugin_config['cdparanoia_opts'])
+        self.ui.flac_opts.setText(self.api.plugin_config['flac_opts'])
 
     def save(self) -> None:
         """Save settings from the options UI."""
-        cdparanoia_opts = self.ui.cdparanoia_opts.text()
-        self.config.setting['cdripper_cdparanoia_opts'] = cdparanoia_opts
-        self.config.setting['cdripper_flac_opts'] = self.ui.flac_opts.text()
+        self.api.plugin_config['cdparanoia_opts'] = self.ui.cdparanoia_opts.text()
+        self.api.plugin_config['flac_opts'] = self.ui.flac_opts.text()
 
-register_options_page(CDRipperOptionsPage)
-register_album_action(RipCD())
+
+def _migrate_v2_settings(api: PluginApi) -> None:
+    """Copy settings saved by the Picard 2 version of this plugin, if any."""
+    setting = api.global_config.setting
+    for name in DEFAULT_OPTIONS:
+        old_name = f'cdripper_{name}'
+        if name not in api.plugin_config and old_name in setting:
+            api.plugin_config[name] = setting.raw_value(old_name)
+
+
+def enable(api: PluginApi) -> None:
+    """Called by Picard when the plugin is enabled."""
+    for name, default in DEFAULT_OPTIONS.items():
+        api.plugin_config.register_option(name, default)
+    _migrate_v2_settings(api)
+    api.register_options_page(CDRipperOptionsPage)
+    api.register_album_action(RipCD)
