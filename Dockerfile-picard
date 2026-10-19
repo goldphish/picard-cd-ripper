@@ -2,7 +2,6 @@ FROM jlesage/musicbrainz-picard:latest
 
 RUN apk add --no-cache cdparanoia flac
 
-# Picard 3 plugins are installed from a directory or git repository rather
-# than dropped into the plugins folder. Install from inside the container with:
-#   picard-cli plugins install /opt/picard-cd-ripper --yes
 COPY MANIFEST.toml __init__.py ui.py ui_options_cdripper.py /opt/picard-cd-ripper/
+COPY docker/56-cdripper-plugin.sh /etc/cont-init.d/
+RUN chmod +x /etc/cont-init.d/56-cdripper-plugin.sh

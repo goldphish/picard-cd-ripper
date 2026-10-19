@@ -32,3 +32,12 @@ Then restart Picard and enable the plugin.
 cdparanoia and flac command line options can be changed under
 *Options → Plugins → CD Ripper*. Settings from the Picard 2 version of the
 plugin are carried over the first time the plugin is enabled.
+
+## Docker
+
+`Dockerfile-picard` extends
+[jlesage/musicbrainz-picard](https://github.com/jlesage/docker-musicbrainz-picard)
+with cdparanoia, flac, and this plugin. The plugin is copied to
+`/opt/picard-cd-ripper`, and `docker/56-cdripper-plugin.sh` registers it with
+Picard each time the container starts (`/config` is a volume, so this can't
+happen at build time). Rebuild the image to pick up plugin changes.
