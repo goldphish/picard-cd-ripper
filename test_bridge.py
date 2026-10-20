@@ -79,13 +79,13 @@ class BridgeTest(unittest.TestCase):
 
     def test_disc(self):
         disc = SimpleNamespace(id='D', mcn='M', toc_string='1 2 3 4 5',
-                               tracks=[SimpleNamespace(isrc='I1'), SimpleNamespace(isrc=None)],
+                               tracks=2, isrcs={2: 'I2', 1: 'I1'},
                                read=lambda device: None)
         mod = SimpleNamespace(Disc=lambda: disc)
         with mock.patch.dict('sys.modules', {'picard.disc': mod, 'picard': SimpleNamespace()}):
             code, out = self.call('GET', '/disc')
         self.assertEqual(code, 200)
-        self.assertEqual(out, {'discid': 'D', 'toc': '1 2 3 4 5', 'mcn': 'M', 'isrcs': ['I1']})
+        self.assertEqual(out, {'discid': 'D', 'toc': '1 2 3 4 5', 'mcn': 'M', 'isrcs': ['I1', 'I2']})
 
 
 if __name__ == '__main__':

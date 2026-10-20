@@ -55,13 +55,11 @@ class Handlers:
             disc.read(device)
         except Exception as e:  # discid.DiscError, or no drive.
             raise BridgeError(409, f'could not read disc in {device}: {e}')
-        raw = getattr(disc, '_discid', None)
-        toc = getattr(disc, 'toc_string', None) or getattr(raw, 'toc_string', '')
-        isrcs = [t.isrc for t in (getattr(disc, 'tracks', None) or [])
-                 if getattr(t, 'isrc', None)]
+        # Picard 3: toc_string is set, tracks is a count, isrcs maps track -> ISRC.
+        isrcs = [isrc for _, isrc in sorted((getattr(disc, 'isrcs', None) or {}).items())]
         return {
             'discid': disc.id,
-            'toc': toc or '',
+            'toc': disc.toc_string or '',
             'mcn': getattr(disc, 'mcn', None) or '',
             'isrcs': isrcs,
         }
