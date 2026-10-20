@@ -1,0 +1,52 @@
+# Picard (with the CD Ripper plugin and its bridge) plus cdcheckd, the phone app.
+#
+# Both containers mount the music directory at the same path, so paths can be
+# passed between them unchanged. The bridge port is only reachable on the
+# compose network; it is deliberately not published.
+#
+# Setup:
+#   mkdir -p secrets && openssl rand -hex 32 > secrets/picard_bridge_token
+#   cp /path/to/cdcheckd.example.toml cdcheckd.toml   # from accuraterip-verifier
+#   docker compose up -d --build
+#
+# Add secrets/gcloud.json and uncomment the secret below to enable Cloud Vision.
+
+services:
+  picard:
+    build:
+      context: .
+      dockerfile: Dockerfile-picard
+    ports:
+      - "5800:5800"   # Picard's web UI
+    devices:
+      - /dev/sr0:/dev/sr0
+    volumes:
+      - ./picard-config:/config
+      - /storage/music:/storage/music
+    environment:
+      CDRIPPER_BRIDGE_PORT: "8090"
+      CDRIPPER_BRIDGE_TOKEN_FILE: /run/secrets/picard_bridge_token
+    secrets:
+      - picard_bridge_token
+
+  cdcheckd:
+    build:
+      context: https://github.com/goldphish/accuraterip-verifier.git#main
+      dockerfile: Dockerfile.cdcheckd
+    ports:
+      - "8080:8080"
+    depends_on:
+      - picard
+    volumes:
+      - ./cdcheckd.toml:/etc/cdcheckd.toml:ro
+      - ./cdcheckd-data:/data
+      - /storage/music:/storage/music   # read-write: verification logs are written here
+    secrets:
+      - picard_bridge_token
+      # - gcloud.json
+
+secrets:
+  picard_bridge_token:
+    file: ./secrets/picard_bridge_token
+  # gcloud.json:
+  #   file: ./secrets/gcloud.json

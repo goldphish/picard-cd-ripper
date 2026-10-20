@@ -3,6 +3,7 @@
 import os
 import shutil
 import tempfile
+import tomllib
 from typing import Any, Optional
 
 from PyQt6 import QtCore
@@ -12,13 +13,19 @@ from picard.disc import Disc
 from picard.plugin3.api import BaseAction, OptionsPage, PluginApi
 from picard.util import sanitize_filename
 
+from . import bridge
 from . import ui
 from . import ui_options_cdripper
 
 DEFAULT_OPTIONS = {
     'cdparanoia_opts': '--batch 1:-',
     'flac_opts': '--verify --replay-gain --delete-input-file',
+    'bridge_enabled': False,
+    'bridge_port': 8090,
+    'bridge_token': '',
 }
+
+_bridge: Optional[bridge.Bridge] = None
 
 
 class RipCDDialog(QDialog):
@@ -197,11 +204,18 @@ class CDRipperOptionsPage(OptionsPage):
         """Load settings into the options UI."""
         self.ui.cdparanoia_opts.setText(self.api.plugin_config['cdparanoia_opts'])
         self.ui.flac_opts.setText(self.api.plugin_config['flac_opts'])
+        self.ui.bridge_enabled.setChecked(bool(self.api.plugin_config['bridge_enabled']))
+        self.ui.bridge_port.setValue(int(self.api.plugin_config['bridge_port']))
+        self.ui.bridge_token.setText(self.api.plugin_config['bridge_token'])
 
     def save(self) -> None:
         """Save settings from the options UI."""
         self.api.plugin_config['cdparanoia_opts'] = self.ui.cdparanoia_opts.text()
         self.api.plugin_config['flac_opts'] = self.ui.flac_opts.text()
+        self.api.plugin_config['bridge_enabled'] = self.ui.bridge_enabled.isChecked()
+        self.api.plugin_config['bridge_port'] = self.ui.bridge_port.value()
+        self.api.plugin_config['bridge_token'] = self.ui.bridge_token.text()
+        _restart_bridge(self.api)
 
 
 def _migrate_v2_settings(api: PluginApi) -> None:
@@ -213,6 +227,64 @@ def _migrate_v2_settings(api: PluginApi) -> None:
             api.plugin_config[name] = setting.raw_value(old_name)
 
 
+def _plugin_version() -> str:
+    try:
+        with open(os.path.join(os.path.dirname(__file__), 'MANIFEST.toml'), 'rb') as f:
+            return tomllib.load(f).get('version', '')
+    except (OSError, tomllib.TOMLDecodeError):
+        return ''
+
+
+def _bridge_settings(api: PluginApi) -> Optional[tuple]:
+    """Return (port, token) if the bridge should run, else None.
+
+    CDRIPPER_BRIDGE_PORT and CDRIPPER_BRIDGE_TOKEN_FILE enable it without the
+    options page, for containers.
+    """
+    cfg = api.plugin_config
+    port = os.environ.get('CDRIPPER_BRIDGE_PORT')
+    token_file = os.environ.get('CDRIPPER_BRIDGE_TOKEN_FILE')
+    if port and token_file:
+        try:
+            with open(token_file, encoding='utf-8') as f:
+                return int(port), f.read().strip()
+        except (OSError, ValueError) as e:
+            api.logger.error(f'Bridge not started: {e}')
+            return None
+    if cfg['bridge_enabled'] and cfg['bridge_token']:
+        return int(cfg['bridge_port']), cfg['bridge_token']
+    return None
+
+
+def _stop_bridge() -> None:
+    global _bridge
+    if _bridge is not None:
+        _bridge.stop()
+        _bridge = None
+
+
+def _restart_bridge(api: PluginApi) -> None:
+    """Start, restart or stop the bridge to match the current settings."""
+    _stop_bridge()
+    settings = _bridge_settings(api)
+    if settings is None:
+        return
+    port, token = settings
+    global _bridge
+    try:
+        _bridge = bridge.Bridge(bridge.Handlers(api, _plugin_version()), token, port,
+                                bridge.make_main_thread_caller())
+        _bridge.start()
+        api.logger.info(f'CD Ripper bridge listening on port {port}')
+    except OSError as e:
+        api.logger.error(f'Could not start the CD Ripper bridge on port {port}: {e}')
+
+
+def disable() -> None:
+    """Called by Picard when the plugin is disabled."""
+    _stop_bridge()
+
+
 def enable(api: PluginApi) -> None:
     """Called by Picard when the plugin is enabled."""
     for name, default in DEFAULT_OPTIONS.items():
@@ -220,3 +292,4 @@ def enable(api: PluginApi) -> None:
     _migrate_v2_settings(api)
     api.register_options_page(CDRipperOptionsPage)
     api.register_album_action(RipCD)
+    _restart_bridge(api)
