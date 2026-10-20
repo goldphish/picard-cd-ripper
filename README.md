@@ -41,3 +41,23 @@ with cdparanoia, flac, and this plugin. The plugin is copied to
 `/opt/picard-cd-ripper`, and `docker/56-cdripper-plugin.sh` registers it with
 Picard each time the container starts (`/config` is a volume, so this can't
 happen at build time). Rebuild the image to pick up plugin changes.
+
+### Compose and the cdcheckd bridge
+
+`docker-compose.yml` runs Picard together with
+[cdcheckd](https://github.com/goldphish/accuraterip-verifier), a phone app that
+checks each CD's release and verifies rips. cdcheckd drives Picard through a
+small HTTP bridge in this plugin (see `DESIGN.md` in that repository):
+
+| Endpoint | Does |
+|---|---|
+| `GET /status` | Picard and plugin versions, and whether "Clear existing tags" is on |
+| `GET /disc` | Reads the CD in the drive: disc ID, TOC, MCN, ISRCs |
+| `POST /load` | `{paths[], release?, discid?}`: loads the release and adds the files |
+
+Every request needs `Authorization: Bearer <token>`. The bridge is off by
+default. Enable it under *Options → Plugins → CD Ripper → cdcheckd bridge*, or
+set `CDRIPPER_BRIDGE_PORT` and `CDRIPPER_BRIDGE_TOKEN_FILE` in the
+environment (as the compose file does). Never publish its port on the host.
+
+Bridge tests: `python3 -m unittest test_bridge`.

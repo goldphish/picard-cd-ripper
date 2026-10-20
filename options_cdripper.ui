@@ -83,6 +83,62 @@
     </widget>
    </item>
    <item>
+    <widget class="QGroupBox" name="bridge_options">
+     <property name="title">
+      <string>cdcheckd bridge</string>
+     </property>
+     <layout class="QVBoxLayout">
+      <property name="spacing">
+       <number>2</number>
+      </property>
+      <property name="margin">
+       <number>9</number>
+      </property>
+      <item>
+       <widget class="QCheckBox" name="bridge_enabled">
+        <property name="text">
+         <string>Accept requests from cdcheckd</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="bridge_port_label">
+        <property name="text">
+         <string>Port:</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QSpinBox" name="bridge_port">
+        <property name="minimum">
+         <number>1</number>
+        </property>
+        <property name="maximum">
+         <number>65535</number>
+        </property>
+        <property name="value">
+         <number>8090</number>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="bridge_token_label">
+        <property name="text">
+         <string>Shared token:</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLineEdit" name="bridge_token">
+        <property name="echoMode">
+         <enum>QLineEdit::Password</enum>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
     <spacer>
      <property name="orientation">
       <enum>Qt::Vertical</enum>
@@ -100,6 +156,9 @@
  <tabstops>
   <tabstop>cdparanoia_opts</tabstop>
   <tabstop>flac_opts</tabstop>
+  <tabstop>bridge_enabled</tabstop>
+  <tabstop>bridge_port</tabstop>
+  <tabstop>bridge_token</tabstop>
  </tabstops>
  <resources/>
  <connections/>
