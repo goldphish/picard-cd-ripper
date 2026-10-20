@@ -1,2 +1,4 @@
 cdripper.zip
 __pycache__/
+secrets/
+cdcheckd.toml
