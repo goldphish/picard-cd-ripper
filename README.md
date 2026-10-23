@@ -53,7 +53,7 @@ small HTTP bridge in this plugin (see `DESIGN.md` in that repository):
 |---|---|
 | `GET /status` | Picard and plugin versions, and whether "Clear existing tags" is on |
 | `GET /disc` | Reads the CD in the drive: disc ID, TOC, MCN, ISRCs |
-| `POST /load` | `{paths[], release?, discid?}`: loads the release and adds the files |
+| `POST /load` | `{paths[], release?, discid?}`: loads the release with the disc ID and adds the files to it, moving them off the release their tags name if it differs, so that saving writes `MUSICBRAINZ_DISCID` |
 
 Every request needs `Authorization: Bearer <token>`. The bridge is off by
 default. Enable it under *Options → Plugins → CD Ripper → cdcheckd bridge*, or
