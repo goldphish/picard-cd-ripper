@@ -83,6 +83,48 @@
     </widget>
    </item>
    <item>
+    <widget class="QGroupBox" name="verify_options">
+     <property name="title">
+      <string>Verification (accuraterip-verify)</string>
+     </property>
+     <layout class="QVBoxLayout">
+      <property name="spacing">
+       <number>2</number>
+      </property>
+      <property name="margin">
+       <number>9</number>
+      </property>
+      <item>
+       <widget class="QLabel" name="verifier_label">
+        <property name="text">
+         <string>Program:</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLineEdit" name="verifier"/>
+      </item>
+      <item>
+       <widget class="QLabel" name="verify_opts_label">
+        <property name="text">
+         <string>Command line options (--offset is the drive's read offset):</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLineEdit" name="verify_opts"/>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="verify_after_rip">
+        <property name="text">
+         <string>Verify each rip when it finishes</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
     <widget class="QGroupBox" name="bridge_options">
      <property name="title">
       <string>cdcheckd bridge</string>
@@ -156,6 +198,9 @@
  <tabstops>
   <tabstop>cdparanoia_opts</tabstop>
   <tabstop>flac_opts</tabstop>
+  <tabstop>verifier</tabstop>
+  <tabstop>verify_opts</tabstop>
+  <tabstop>verify_after_rip</tabstop>
   <tabstop>bridge_enabled</tabstop>
   <tabstop>bridge_port</tabstop>
   <tabstop>bridge_token</tabstop>

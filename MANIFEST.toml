@@ -7,9 +7,15 @@ configured CD lookup drive is ripped with cdparanoia, each track is encoded
 to FLAC, and the resulting files are attached to the matching tracks of the
 selected album.
 
-Requires the `cdparanoia` and `flac` command line tools in `/usr/bin`.
+A "Verify and re-rip CD..." action checks the rip against AccurateRip and
+the CUETools DB using the exact TOC of the CD in the drive, and re-rips only
+the tracks that fail. A track's file is replaced only when its new rip
+verifies.
+
+Requires the `cdparanoia` and `flac` command line tools in `/usr/bin`, and
+`accuraterip-verify` (from goldphish/accuraterip-verifier) for verification.
 """
-version = "1.0.0"
+version = "1.1.0"
 api = ["3.0"]
 authors = ["Dan Lange"]
 license = "GPL-2.0-or-later"

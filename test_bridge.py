@@ -69,7 +69,9 @@ class BridgeTest(unittest.TestCase):
         self.scheduled = []
         api = SimpleNamespace(tagger=self.tagger, logger=mock.Mock(), global_config=SimpleNamespace(
             setting={'clear_existing_tags': False, 'cd_lookup_device': '/dev/sr0,x'}))
-        handlers = bridge.Handlers(api, '1.2.3', schedule=lambda ms, fn: self.scheduled.append(fn))
+        self.rerips = []
+        handlers = bridge.Handlers(api, '1.2.3', schedule=lambda ms, fn: self.scheduled.append(fn),
+                                   open_rerip=lambda *args: self.rerips.append(args))
         self.srv = bridge.Bridge(handlers, TOKEN, 0, lambda fn: fn(), host='127.0.0.1')
         self.srv.start()
         self.addCleanup(self.srv.stop)
@@ -141,6 +143,35 @@ class BridgeTest(unittest.TestCase):
             tempfile.gettempdir(), 'does-not-exist-xyz')]})[0], 404)
         self.assertEqual(self.tagger.calls, [])
 
+    def _drive(self, discid='D', toc='1 2 500 150 300'):
+        disc = SimpleNamespace(id=discid, mcn='', toc_string=toc, tracks=2, isrcs={}, read=lambda device: None)
+        return mock.patch.dict('sys.modules', {'picard.disc': SimpleNamespace(Disc=lambda: disc),
+                                               'picard': SimpleNamespace()})
+
+    def test_rerip(self):
+        with tempfile.TemporaryDirectory() as d:
+            files = [os.path.join(d, f'{n}.flac') for n in (1, 2)]
+            for f in files:
+                open(f, 'w').close()
+            with self._drive():
+                code, _ = self.call('POST', '/rerip', {'files': files, 'tracks': [2, 2], 'discid': 'D'})
+            self.assertEqual(code, 200)
+            self.assertEqual(len(self.rerips), 1)
+            self.assertEqual(self.rerips[0][:2], (files, [2]))
+            self.assertEqual(self.rerips[0][2]['toc'], '1 2 500 150 300')
+
+            # Another CD, or one with another number of tracks, is refused.
+            with self._drive(discid='OTHER'):
+                self.assertEqual(self.call('POST', '/rerip', {'files': files, 'tracks': [2], 'discid': 'D'})[0], 409)
+            with self._drive(toc='1 3 700 150 300 500'):
+                self.assertEqual(self.call('POST', '/rerip', {'files': files, 'tracks': [2]})[0], 409)
+            with self._drive():
+                self.assertEqual(self.call('POST', '/rerip', {'files': files, 'tracks': [3]})[0], 400)
+                self.assertEqual(self.call('POST', '/rerip', {'files': files, 'tracks': ['1']})[0], 400)
+                self.assertEqual(self.call('POST', '/rerip', {'files': ['rel.flac'], 'tracks': []})[0], 400)
+                self.assertEqual(self.call('POST', '/rerip', {'files': [files[0] + 'x'], 'tracks': []})[0], 404)
+            self.assertEqual(len(self.rerips), 1)
+
     def test_disc(self):
         disc = SimpleNamespace(id='D', mcn='M', toc_string='1 2 3 4 5',
                                tracks=[SimpleNamespace(isrc='I1'), SimpleNamespace(isrc=None)],
@@ -150,6 +181,15 @@ class BridgeTest(unittest.TestCase):
             code, out = self.call('GET', '/disc')
         self.assertEqual(code, 200)
         self.assertEqual(out, {'discid': 'D', 'toc': '1 2 3 4 5', 'mcn': 'M', 'isrcs': ['I1']})
+
+    def test_disc_picard3(self):
+        # Picard 3's Disc: tracks is a count, ISRCs are keyed by track.
+        disc = SimpleNamespace(id='D', mcn='', toc_string='1 2 500 150 300', tracks=2,
+                               isrcs={2: 'I2', 1: 'I1'}, read=lambda device: None)
+        mod = SimpleNamespace(Disc=lambda: disc)
+        with mock.patch.dict('sys.modules', {'picard.disc': mod, 'picard': SimpleNamespace()}):
+            code, out = self.call('GET', '/disc')
+        self.assertEqual((code, out['isrcs']), (200, ['I1', 'I2']))
 
 
 if __name__ == '__main__':
