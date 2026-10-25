@@ -4,7 +4,7 @@ import os
 import shutil
 import tempfile
 import tomllib
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from PyQt6 import QtCore
 from PyQt6.QtWidgets import QDialog, QMessageBox
@@ -125,6 +125,7 @@ class CDRipper(QtCore.QObject):
         self.album = album
         self.discid: Optional[str] = None
         self.toc = ''
+        self._paranoia = rerip.ParanoiaReport()
         self._ripping: bool = False
 
         self.widget = RipCDDialog(self.tagger.window)
@@ -165,36 +166,52 @@ class CDRipper(QtCore.QObject):
         files = sorted(self._flac_files, key=lambda f: int(f[1].metadata['tracknumber'] or 0))
         tracks = [rerip.Track(i, track.metadata['title'], path)
                   for i, (path, track) in enumerate(files, 1)]
+        paranoia = {t.number: self._paranoia.track(t.number) for t in tracks}
         dialog = rerip_dialog.ReRipDialog(self.tagger.window, self.api.plugin_config,
                                           self.album.metadata['album'], tracks, self.toc,
-                                          log=self.log)
+                                          log=self.log, paranoia=paranoia)
         QtCore.QTimer.singleShot(0, dialog.start)
         dialog.exec()
 
-    def _newProcess(self, output_widget: Any) -> QtCore.QProcess:
-        """Create a new QProcess for running external commands."""
+    def _newProcess(self, output_widget: Any,
+                    show: Optional[Callable[[str], str]] = None) -> QtCore.QProcess:
+        """Create a new QProcess for running external commands.
+
+        show, if given, filters the output before it is shown.
+        """
         process = QtCore.QProcess()
         process.setWorkingDirectory(self._tmpdir)
         process.setProcessChannelMode(QtCore.QProcess.ProcessChannelMode.MergedChannels)
         process.setReadChannel(QtCore.QProcess.ProcessChannel.StandardOutput)
         process.errorOccurred.connect(self.errorHandler)
+
+        def append(p: QtCore.QProcess, w: Any) -> None:
+            text = _decode(p.readAll())
+            if show is not None:
+                text = show(text).rstrip('\n')
+                if not text:
+                    return
+            w.appendPlainText(text)
         # Connect output directly to the correct widget
         process.readyReadStandardOutput.connect(
-            lambda p=process, w=output_widget: w.appendPlainText(_decode(p.readAll())))
+            lambda p=process, w=output_widget: append(p, w))
         # Ensure all output is flushed on finish
         process.finished.connect(
-            lambda *_, p=process, w=output_widget: w.appendPlainText(_decode(p.readAll())))
+            lambda *_, p=process, w=output_widget: append(p, w))
         return process
 
     def rip(self) -> None:
         """Start the CD ripping process using cdparanoia."""
-        process = self._newProcess(self.widget.ui.rip_output)
+        # cdparanoia -e reports what it ran into; the report keeps count per
+        # track and hides its event lines.
+        self._paranoia = rerip.ParanoiaReport(rerip.toc_starts(self.toc))
+        process = self._newProcess(self.widget.ui.rip_output, show=self._paranoia.feed)
         self._processes.append(process)
         process.started.connect(self.ripStarted)
         process.finished.connect(self.ripFinished)
         opts = self.api.plugin_config['cdparanoia_opts']
         self.log.debug(f'Using tmp dir: {self._tmpdir}')
-        process.start('/usr/bin/cdparanoia', opts.split())
+        process.start('/usr/bin/cdparanoia', rerip.with_reports(opts.split()))
 
     def ripStarted(self) -> None:
         """Handler for when ripping starts."""
@@ -208,7 +225,12 @@ class CDRipper(QtCore.QObject):
         self._ripping = False
         if status != QtCore.QProcess.ExitStatus.CrashExit:
             self.log.debug('Rip finished; starting encode.')
-            self.widget.ui.rip_output.appendPlainText('CD ripping complete!')
+            out = self.widget.ui.rip_output
+            rest = self._paranoia.flush()
+            if rest:
+                out.appendPlainText(rest)
+            out.appendPlainText('CD ripping complete!')
+            out.appendPlainText(_paranoia_lines(self._paranoia))
             self.encode()
 
     def encode(self) -> None:
@@ -327,6 +349,15 @@ class CDRipper(QtCore.QObject):
             shutil.rmtree(self._tmpdir)
         except OSError as e:
             self.log.debug(f'Failed to remove temp dir: {e}')
+
+
+def _paranoia_lines(report: rerip.ParanoiaReport) -> str:
+    """cdparanoia's report on a rip, a line per track that had problems."""
+    lines = [f'cdparanoia, track {n}: {rerip.paranoia_summary(c)}'
+             for n, c in sorted(report.counts.items()) if n and c]
+    if report.counts.get(0):  # before the first track's start
+        lines.append(f'cdparanoia, before track 1: {rerip.paranoia_summary(report.counts[0])}')
+    return '\n'.join(lines) or 'cdparanoia reported no problems.'
 
 
 def _decode(data: QtCore.QByteArray) -> str:

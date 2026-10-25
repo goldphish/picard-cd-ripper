@@ -64,9 +64,30 @@ those tracks. Rather than ripping the whole CD again:
    file's tags, pictures and ReplayGain.
 5. The new rips are verified together with the album's other files. A
    track's file is replaced (atomically, in place) only if its new rip
-   verifies. Otherwise the original is kept, and the window says whether
-   the new rip read the same CRC again: if it does every time, the disc
-   reads consistently and is likely damaged rather than misread.
+   verifies, by AccurateRip or, track by track, by the CUETools DB.
+   Otherwise the original is kept.
+
+The *cdparanoia* column shows what cdparanoia ran into on each track's last
+rip: skips (parts it gave up on), drive errors, scratches and the
+corrections it made. The plugin runs cdparanoia with `-e` to get this, and
+the full *Rip CD* reports it per track as well. A clean report doesn't prove
+a track is right: a drive can fill in damaged audio the same wrong way on
+every read, and cdparanoia can't see that.
+
+### A track that never verifies
+
+Re-rip it a few times, ideally after cleaning the disc and in another
+drive. The window compares each re-rip's audio with the one before and with
+the current file:
+
+- **Different audio each time:** the drive is struggling. Keep trying,
+  slower (`-S 4` in the cdparanoia options) or in another drive.
+- **The same audio twice, with no skips:** the drive reads it consistently.
+  *Keep consistent re-rips* then replaces the file with it. Use this when
+  nothing else helps: it is the best that disc gives, but no database
+  confirms it, and the window says so. It is not offered when cdparanoia
+  skipped parts of either rip, since it may have filled them the same way.
+- **The same audio as the current file:** nothing to gain from keeping it.
 
 When no track verifies at all, nothing is ticked: that usually means your
 pressing isn't in either database (or the offset is wrong), which re-ripping

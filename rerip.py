@@ -11,11 +11,13 @@ A new rip never overwrites a file blindly. It is verified first, alongside
 the album's other files, and replaces the old file only if it verifies.
 """
 
+import bisect
 import json
 import os
 import re
 import shlex
 import shutil
+from collections import Counter
 from dataclasses import dataclass
 from typing import Optional
 
@@ -43,14 +45,110 @@ def cdparanoia_args(opts: str, track: int) -> list:
     """cdparanoia arguments that rip one track to trackNN.cdda.wav.
 
     The configured options rip the whole disc, so their span is dropped and
-    replaced with the track. Batch mode is what names the output file.
+    replaced with the track. Batch mode is what names the output file, and
+    -e makes cdparanoia report what it ran into (see ParanoiaReport).
     """
     args = shlex.split(opts)
     if args and _SPAN.match(args[-1]) and (len(args) < 2 or args[-2] not in _VALUE_OPTS):
         args.pop()
     if not any(a in ('-B', '--batch') for a in args):
         args.append('--batch')
-    return args + ['--', str(track)]
+    return with_reports(args) + ['--', str(track)]
+
+
+def with_reports(args: list) -> list:
+    """args with cdparanoia's -e (machine-readable progress) added."""
+    if any(a in ('-e', '--stderr-progress') for a in args):
+        return list(args)
+    return ['-e'] + list(args)
+
+
+# cdparanoia -e writes one line per event: "##: <code> [<event>] @ <position>",
+# the position in 16-bit words from the start of the disc.
+_EVENT = re.compile(r'^##: -?\d+ \[([^\]]*)\] @ (-?\d+)\s*$')
+WORDS_PER_SECTOR = 1176
+
+# The events worth reporting, worst first, with how to name them. The rest
+# ("read", "verify", "wrote", "overlap", "backoff", ...) are routine.
+PARANOIA_EVENTS = [
+    ('skip', 'skip', 'skips'),
+    ('transport error', 'drive error', 'drive errors'),
+    ('cache error', 'cache error', 'cache errors'),
+    ('scratch', 'scratch', 'scratches'),
+    ('scratch repair', 'scratch repair', 'scratch repairs'),
+    ('dropped', 'dropped-bytes fix', 'dropped-bytes fixes'),
+    ('duped', 'duplicated-bytes fix', 'duplicated-bytes fixes'),
+    ('drift', 'drift fix', 'drift fixes'),
+    ('jitter', 'jitter fix', 'jitter fixes'),
+    ('correction', 'correction', 'corrections'),
+]
+_REPORTED = {name for name, _, _ in PARANOIA_EVENTS}
+
+
+class ParanoiaReport:
+    """Counts the problems cdparanoia -e reports, per track.
+
+    Its event lines (thousands per track) are taken out of the output shown
+    to the user. starts are the tracks' first sectors, counted from 0 as
+    cdparanoia counts them; without them, everything is counted as track 0.
+    """
+
+    def __init__(self, starts: Optional[list] = None) -> None:
+        self.starts = starts or []
+        self.counts: dict = {}
+        self._partial = ''
+
+    def feed(self, text: str) -> str:
+        """Count the events in text and return the rest of it."""
+        lines = (self._partial + text).split('\n')
+        self._partial = lines.pop()
+        return ''.join(line + '\n' for line in self._take(lines))
+
+    def flush(self) -> str:
+        """Count a last line left without a newline; return it if not an event."""
+        rest, self._partial = self._partial, ''
+        return ''.join(self._take([rest])) if rest else ''
+
+    def _take(self, lines: list) -> list:
+        out = []
+        for line in lines:
+            m = _EVENT.match(line.strip())
+            if not m:
+                out.append(line)
+            elif m.group(1) in _REPORTED:
+                sector = int(m.group(2)) // WORDS_PER_SECTOR
+                track = bisect.bisect_right(self.starts, sector) if self.starts else 0
+                self.counts.setdefault(track, Counter())[m.group(1)] += 1
+        return out
+
+    def track(self, n: int = 0) -> Counter:
+        return self.counts.get(n, Counter())
+
+
+def paranoia_summary(counts: Counter) -> str:
+    """What cdparanoia ran into on a track, worst first."""
+    parts = [f'{counts[name]} {one if counts[name] == 1 else many}'
+             for name, one, many in PARANOIA_EVENTS if counts.get(name)]
+    return ', '.join(parts) if parts else 'no problems'
+
+
+def toc_starts(toc: str) -> list:
+    """Each track's first sector, counted from 0 as cdparanoia does."""
+    parts = toc.split()
+    try:
+        return [int(x) - 150 for x in parts[3:]]
+    except ValueError:
+        return []
+
+
+def audio_md5(path: str) -> bytes:
+    """The MD5 of a FLAC file's audio, which flac stores when encoding.
+
+    Two rips with the same MD5 read the same samples. Empty when unknown.
+    """
+    from mutagen.flac import FLAC
+    md5 = FLAC(path).info.md5_signature
+    return md5.to_bytes(16, 'big') if md5 else b''
 
 
 def wav_name(track: int) -> str:
@@ -185,7 +283,8 @@ def describe(t: dict) -> str:
     """One track's result, for the table."""
     if t.get('verified'):
         conf = t.get('confidence') or 0
-        return f'verified (confidence {conf})' if conf else 'verified'
+        by = ' by the CUETools DB' if t.get('source') == 'ctdb' else ''
+        return f'verified{by} (confidence {conf})' if conf else f'verified{by}'
     return f'did not verify (CRC {t.get("crc_v1", 0) & 0xffffffff:08x})'
 
 
