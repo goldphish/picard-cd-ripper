@@ -1,0 +1,15 @@
+music_root   = "/storage"            # same path as in the Picard container
+drive_offset = 6                     # same value as accuraterip-verify --offset
+listen       = ":8080"
+data_dir     = "/data"               # SQLite database and photos
+
+[picard]
+bridge_url = "http://picard:8090"           # omit to disable Picard integration
+token_file = "/run/secrets/picard_bridge_token"
+
+[musicbrainz]
+user_agent = "cdcheck/0.1 ( you@example.com )"
+
+[vision]                          # omit to match by barcode only
+provider         = "google"
+credentials_file = "/run/secrets/gcloud.json"
