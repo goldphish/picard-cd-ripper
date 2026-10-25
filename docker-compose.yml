@@ -10,6 +10,12 @@
 #   docker compose up -d --build
 #
 # Add secrets/gcloud.json and uncomment the secret below to enable Cloud Vision.
+#
+volumes:
+  picard-config:
+    external: true
+    name: docker_picard-config
+  cdcheck-data:
 
 volumes:
   picard-config:
@@ -28,8 +34,9 @@ services:
       - "6900:5900"
     devices:
       - "/dev/disk/by-id/ata-ASUS_DRW-24B1ST_j_J6D0CL012583:/dev/sr0"
+      - "/dev/disk/by-id/ata-HL-DT-ST_BD-RE_WH16NS60_KLLJALE0244:/dev/sr1"
     volumes:
-      - picard-config:/config
+      - picard-config:/config:rw
       - /media/music/flac:/storage:rw
       - /home/dan/src/picard-cd-ripper/nobrowser.sh:/usr/bin/xdg-open:ro
     environment:
@@ -41,8 +48,10 @@ services:
 
   cdcheckd:
     build:
-      context: git@github.com:goldphish/accuraterip-verifier.git
+      context: git@github.com:goldphish/accuraterip-verifier.git#main
       dockerfile: Dockerfile.cdcheckd
+      ssh:
+        - default
     ports:
       - "8080:8080"
     depends_on:
@@ -50,7 +59,7 @@ services:
     volumes:
       - ./cdcheckd.toml:/etc/cdcheckd.toml:ro
       - cdcheckd-data:/data
-      - /media/music/flac:/media/music/flac   # read-write: verification logs are written here
+      - /media/music/flac:/storage:rw
     secrets:
       - picard_bridge_token
       - gcloud.json

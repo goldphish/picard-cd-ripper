@@ -1,6 +1,6 @@
 # accuraterip-verify, which the plugin's Verify and re-rip window runs.
 FROM golang:1.26-alpine AS verifier
-ADD https://github.com/goldphish/accuraterip-verifier.git#main /src
+ADD git@github.com:goldphish/accuraterip-verifier.git#main /src
 WORKDIR /src
 RUN CGO_ENABLED=0 go build -trimpath -o /out/accuraterip-verify .
 
