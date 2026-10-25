@@ -159,7 +159,7 @@ class CDRipper(QtCore.QObject):
     def verify(self) -> None:
         """Verify the new rip while the CD is still in the drive.
 
-        The window is modal: the files are still in the temporary directory,
+        The window is modal: new files are still in the temporary directory,
         and saving in Picard moves them.
         """
         files = sorted(self._flac_files, key=lambda f: int(f[1].metadata['tracknumber'] or 0))
@@ -241,14 +241,12 @@ class CDRipper(QtCore.QObject):
         """Handler for when encoding finishes for a track."""
         self._encode_process_count -= 1
         if self._encode_process_count == 0:
+            placed = []
             for path, track in self._flac_files:
-                f = self.tagger.format_registry.open(path)
-                if f is None:
-                    self.log.error(f'Could not open encoded file: {path}')
-                    continue
-                self.tagger.files[path] = f
-                f.move(track)
-                f.load(lambda *_, **__: True)
+                path = self._place(path, track)
+                if path:
+                    placed.append((path, track))
+            self._flac_files = placed
 
             if len(self._flac_files) != self._expected_num_tracks:
                 self.log.debug('Ripping/encoding was aborted.')
@@ -258,6 +256,61 @@ class CDRipper(QtCore.QObject):
             self.album.load()
             self.widget.ui.finished_button.setEnabled(True)
             self._tmpdir = tempfile.mkdtemp()
+
+    def _place(self, path: str, track: Any) -> Optional[str]:
+        """Put a new rip on its track, replacing the track's old file if any.
+
+        A re-rip must not end up beside the old rip: attached as a second
+        file on the track, or saved by Picard as "Title (1).flac" because the
+        old file holds the name. So when the track already has a file, or a
+        file exists where saving would put this one, the new audio replaces
+        it in place, keeping its tags. Returns the track's file, or None.
+        """
+        f = self.tagger.format_registry.open(path)
+        if f is None:
+            self.log.error(f'Could not open encoded file: {path}')
+            return None
+        old = self._old_rip(f, path, track)
+        if old is None:
+            self.tagger.files[path] = f
+            f.move(track)
+            f.load(lambda *_, **__: True)
+            return path
+        try:
+            rerip.copy_tags(old, path)
+            rerip.replace_file(path, old)
+        except Exception as e:  # OSError, or mutagen's errors
+            self.log.error(f'Could not replace {old} with the new rip: {e}')
+            self.widget.ui.encode_output.appendPlainText(f'Could not replace {old}: {e}')
+            return None
+        os.remove(path)
+        self.widget.ui.encode_output.appendPlainText(f'Replaced {old}')
+        existing = self.tagger.files.get(old)
+        if existing is None:  # saved by an earlier rip, not loaded now
+            existing = self.tagger.format_registry.open(old)
+            if existing is None:
+                return None
+            self.tagger.files[old] = existing
+            existing.move(track)
+            existing.load(lambda *_, **__: True)
+        elif existing not in list(track.iterfiles()):
+            existing.move(track)
+        return old
+
+    def _old_rip(self, f: Any, path: str, track: Any) -> Optional[str]:
+        """The file an earlier rip of track left: on the track, or on disk
+        where Picard would save this one."""
+        for old in track.iterfiles():
+            if old.filename != path and os.path.isfile(old.filename):
+                return old.filename
+        try:
+            target = f.make_filename(path, track.metadata)
+        except Exception as e:  # a broken naming script
+            self.log.debug(f'Could not work out where {path} will be saved: {e}')
+            return None
+        if target != path and os.path.isfile(target):
+            return target
+        return None
 
     def errorHandler(self, error: QtCore.QProcess.ProcessError) -> None:
         """Handler for process errors."""

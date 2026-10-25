@@ -32,6 +32,13 @@ Then restart Picard and enable the plugin.
 2. Right-click the album and choose *Plugins → Rip CD...*.
 3. When ripping and encoding finish, click *Finished*.
 
+Ripping a CD again replaces its old files rather than adding new ones beside
+them. A track's old file, whether loaded on the album in Picard or saved
+where Picard would save the new rip, gets the new audio in place and keeps
+its tags. (Otherwise Picard would attach a second file to the track, or save
+the new one as `Title (1).flac`.) To re-rip only a few tracks, use *Verify
+and re-rip* below.
+
 When the verifier is installed, the new rip is verified as soon as you click
 *Finished* (see below), while the CD is still in the drive. Save in Picard
 after closing that window: until then the files are in a temporary directory.
@@ -95,6 +102,6 @@ default. Enable it under *Options → Plugins → CD Ripper → cdcheckd bridge*
 set `CDRIPPER_BRIDGE_PORT` and `CDRIPPER_BRIDGE_TOKEN_FILE` in the
 environment (as the compose file does). Never publish its port on the host.
 
-Tests: `python3 -m unittest test_bridge test_rerip` (the re-rip window's
+Tests: `python3 -m unittest test_bridge test_rerip test_ripper` (the re-rip window's
 tests need PyQt6, mutagen and `flac`; set `QT_QPA_PLATFORM=offscreen`
 without a display).
