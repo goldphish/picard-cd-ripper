@@ -12,24 +12,67 @@ import bridge
 TOKEN = 'secret'
 
 
+class FakeAlbum:
+    def __init__(self, id):
+        self.id = id
+        self.files = []
+
+    def iterfiles(self):
+        return iter(self.files)
+
+
+class FakeFile:
+    def __init__(self, album):
+        self.state = 'PENDING'
+        self.parent_item = None
+        self.album = album
+
+    def place(self):
+        """What Picard does once loaded: file it under its tagged release."""
+        self.state, self.parent_item = 'NORMAL', self.album
+        self.album.files.append(self)
+
+
 class FakeTagger:
     def __init__(self):
         self.calls = []
+        self.albums = {}
+        self.files = {}
+        self.tagged = None  # release the files' MUSICBRAINZ_ALBUMID names
 
     def load_album(self, release, discid=None):
         self.calls.append(('load_album', release, discid))
+        return self.albums.setdefault(release, FakeAlbum(release))
 
     def add_paths(self, paths):
         self.calls.append(('add_paths', paths))
+        if self.tagged:
+            old = self.albums.setdefault(self.tagged, FakeAlbum(self.tagged))
+            for i in range(2):
+                self.files[os.path.join(paths[0], f'{i}.flac')] = FakeFile(old)
+
+    def move_files_to_album(self, files, album):
+        self.calls.append(('move', len(files), album.id))
+        for f in files:
+            f.album.files.remove(f)
+            f.album = album
+            album.files.append(f)
+
+    def remove_album(self, album):
+        self.calls.append(('remove_album', album.id))
+        del self.albums[album.id]
 
 
 class BridgeTest(unittest.TestCase):
     def setUp(self):
         self.tagger = FakeTagger()
-        api = SimpleNamespace(tagger=self.tagger, global_config=SimpleNamespace(
+        self.scheduled = []
+        api = SimpleNamespace(tagger=self.tagger, logger=mock.Mock(), global_config=SimpleNamespace(
             setting={'clear_existing_tags': False, 'cd_lookup_device': '/dev/sr0,x'}))
-        self.srv = bridge.Bridge(bridge.Handlers(api, '1.2.3'), TOKEN, 0,
-                                 lambda fn: fn(), host='127.0.0.1')
+        self.rerips = []
+        handlers = bridge.Handlers(api, '1.2.3', schedule=lambda ms, fn: self.scheduled.append(fn),
+                                   open_rerip=lambda *args: self.rerips.append(args))
+        self.srv = bridge.Bridge(handlers, TOKEN, 0, lambda fn: fn(), host='127.0.0.1')
         self.srv.start()
         self.addCleanup(self.srv.stop)
 
@@ -65,6 +108,29 @@ class BridgeTest(unittest.TestCase):
             self.assertEqual(code, 200)
             self.assertEqual(self.tagger.calls, [('load_album', 'r1', 'd1'), ('add_paths', [d])])
 
+    def test_load_moves_files_to_requested_release(self):
+        # The files are tagged with another edition: Picard files them there,
+        # without the disc ID. The bridge moves them to the requested release.
+        self.tagger.tagged = 'old'
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(self.call('POST', '/load', {'paths': [d], 'release': 'new', 'discid': 'd1'})[0], 200)
+            self.assertEqual(len(self.scheduled), 1)  # still loading: check again later
+            for f in self.tagger.files.values():
+                f.place()
+            self.scheduled.pop()()
+            self.assertEqual(self.tagger.calls[-2:], [('move', 2, 'new'), ('remove_album', 'old')])
+            self.assertEqual(len(self.tagger.albums['new'].files), 2)
+            self.assertEqual(self.scheduled, [])
+
+    def test_load_leaves_files_already_on_release(self):
+        self.tagger.tagged = 'r1'
+        with tempfile.TemporaryDirectory() as d:
+            self.call('POST', '/load', {'paths': [d], 'release': 'r1', 'discid': 'd1'})
+            for f in self.tagger.files.values():
+                f.place()
+            self.scheduled.pop()()
+            self.assertNotIn('move', [c[0] for c in self.tagger.calls])
+
     def test_load_without_release(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(self.call('POST', '/load', {'paths': [d]})[0], 200)
@@ -77,6 +143,35 @@ class BridgeTest(unittest.TestCase):
             tempfile.gettempdir(), 'does-not-exist-xyz')]})[0], 404)
         self.assertEqual(self.tagger.calls, [])
 
+    def _drive(self, discid='D', toc='1 2 500 150 300'):
+        disc = SimpleNamespace(id=discid, mcn='', toc_string=toc, tracks=2, isrcs={}, read=lambda device: None)
+        return mock.patch.dict('sys.modules', {'picard.disc': SimpleNamespace(Disc=lambda: disc),
+                                               'picard': SimpleNamespace()})
+
+    def test_rerip(self):
+        with tempfile.TemporaryDirectory() as d:
+            files = [os.path.join(d, f'{n}.flac') for n in (1, 2)]
+            for f in files:
+                open(f, 'w').close()
+            with self._drive():
+                code, _ = self.call('POST', '/rerip', {'files': files, 'tracks': [2, 2], 'discid': 'D'})
+            self.assertEqual(code, 200)
+            self.assertEqual(len(self.rerips), 1)
+            self.assertEqual(self.rerips[0][:2], (files, [2]))
+            self.assertEqual(self.rerips[0][2]['toc'], '1 2 500 150 300')
+
+            # Another CD, or one with another number of tracks, is refused.
+            with self._drive(discid='OTHER'):
+                self.assertEqual(self.call('POST', '/rerip', {'files': files, 'tracks': [2], 'discid': 'D'})[0], 409)
+            with self._drive(toc='1 3 700 150 300 500'):
+                self.assertEqual(self.call('POST', '/rerip', {'files': files, 'tracks': [2]})[0], 409)
+            with self._drive():
+                self.assertEqual(self.call('POST', '/rerip', {'files': files, 'tracks': [3]})[0], 400)
+                self.assertEqual(self.call('POST', '/rerip', {'files': files, 'tracks': ['1']})[0], 400)
+                self.assertEqual(self.call('POST', '/rerip', {'files': ['rel.flac'], 'tracks': []})[0], 400)
+                self.assertEqual(self.call('POST', '/rerip', {'files': [files[0] + 'x'], 'tracks': []})[0], 404)
+            self.assertEqual(len(self.rerips), 1)
+
     def test_disc(self):
         disc = SimpleNamespace(id='D', mcn='M', toc_string='1 2 3 4 5',
                                tracks=[SimpleNamespace(isrc='I1'), SimpleNamespace(isrc=None)],
@@ -86,6 +181,15 @@ class BridgeTest(unittest.TestCase):
             code, out = self.call('GET', '/disc')
         self.assertEqual(code, 200)
         self.assertEqual(out, {'discid': 'D', 'toc': '1 2 3 4 5', 'mcn': 'M', 'isrcs': ['I1']})
+
+    def test_disc_picard3(self):
+        # Picard 3's Disc: tracks is a count, ISRCs are keyed by track.
+        disc = SimpleNamespace(id='D', mcn='', toc_string='1 2 500 150 300', tracks=2,
+                               isrcs={2: 'I2', 1: 'I1'}, read=lambda device: None)
+        mod = SimpleNamespace(Disc=lambda: disc)
+        with mock.patch.dict('sys.modules', {'picard.disc': mod, 'picard': SimpleNamespace()}):
+            code, out = self.call('GET', '/disc')
+        self.assertEqual((code, out['isrcs']), (200, ['I1', 'I2']))
 
 
 if __name__ == '__main__':

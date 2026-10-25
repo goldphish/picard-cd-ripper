@@ -1,7 +1,14 @@
+# accuraterip-verify, which the plugin's Verify and re-rip window runs.
+FROM golang:1.26-alpine AS verifier
+ADD https://github.com/goldphish/accuraterip-verifier.git#main /src
+WORKDIR /src
+RUN CGO_ENABLED=0 go build -trimpath -o /out/accuraterip-verify .
+
 FROM jlesage/musicbrainz-picard:latest
 
 RUN apk add --no-cache cdparanoia flac
 
-COPY MANIFEST.toml __init__.py bridge.py ui.py ui_options_cdripper.py /opt/picard-cd-ripper/
+COPY --from=verifier /out/accuraterip-verify /usr/bin/accuraterip-verify
+COPY MANIFEST.toml __init__.py bridge.py rerip.py rerip_dialog.py ui.py ui_options_cdripper.py /opt/picard-cd-ripper/
 COPY docker/56-cdripper-plugin.sh /etc/cont-init.d/
 RUN chmod +x /etc/cont-init.d/56-cdripper-plugin.sh
