@@ -7,13 +7,15 @@ import tomllib
 from typing import Any, Optional
 
 from PyQt6 import QtCore
-from PyQt6.QtWidgets import QDialog
+from PyQt6.QtWidgets import QDialog, QMessageBox
 
 from picard.disc import Disc
 from picard.plugin3.api import BaseAction, OptionsPage, PluginApi
 from picard.util import sanitize_filename
 
 from . import bridge
+from . import rerip
+from . import rerip_dialog
 from . import ui
 from . import ui_options_cdripper
 
@@ -23,6 +25,9 @@ DEFAULT_OPTIONS = {
     'bridge_enabled': False,
     'bridge_port': 8090,
     'bridge_token': '',
+    'verifier': '/usr/bin/accuraterip-verify',
+    'verify_opts': '--offset 6',
+    'verify_after_rip': True,
 }
 
 _bridge: Optional[bridge.Bridge] = None
@@ -46,6 +51,70 @@ class RipCD(BaseAction):
         CDRipper(self.api, album).run()
 
 
+class VerifyCD(BaseAction):
+    """Album action to verify the rip and re-rip tracks that fail."""
+    TITLE = '&Verify and re-rip CD...'
+
+    def callback(self, objs: list) -> None:
+        album = objs[0]
+        try:
+            disc = bridge.read_disc(self.api)
+        except bridge.BridgeError as e:
+            QMessageBox.warning(self.tagger.window, 'Verify and re-rip', f'Put the CD in the drive: {e}')
+            return
+        tracks, problem = _album_tracks(album, disc)
+        if problem:
+            QMessageBox.warning(self.tagger.window, 'Verify and re-rip', problem)
+            return
+        _open_dialog(self.api, album.metadata['album'], tracks, disc['toc'])
+
+
+def _album_tracks(album: Any, disc: dict) -> tuple:
+    """The album's tracks on the disc in the drive, with their files.
+
+    Returns (tracks, problem): problem says why they can't be verified.
+    """
+    on_disc = [t for t in album.tracks if disc['discid'] in t.metadata['~musicbrainz_discids']]
+    if not on_disc:
+        return [], (f'The CD in the drive ({disc["discid"]}) is not attached to this release '
+                    'in MusicBrainz. Load the release that matches it.')
+    on_disc.sort(key=lambda t: int(t.metadata['tracknumber'] or 0))
+    tracks, missing = [], []
+    for i, t in enumerate(on_disc, 1):
+        files = list(t.iterfiles())
+        if len(files) != 1:
+            missing.append(str(i))
+            continue
+        tracks.append(rerip.Track(i, t.metadata['title'], files[0].filename))
+    if missing:
+        return [], f'Each track needs exactly one file. Tracks without: {", ".join(missing)}.'
+    return tracks, ''
+
+
+# Open Verify and re-rip windows, kept from garbage collection until closed.
+_dialogs: list = []
+
+
+def _open_dialog(api: PluginApi, title: str, tracks: list, toc: str,
+                 preselect: Optional[list] = None) -> None:
+    """Open a Verify and re-rip window beside Picard's."""
+    dialog = rerip_dialog.ReRipDialog(api.tagger.window, api.plugin_config, title, tracks, toc,
+                                      preselect, api.logger)
+    dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+    _dialogs.append(dialog)
+    dialog.finished.connect(lambda *_: _dialogs.remove(dialog))
+    dialog.show()
+    dialog.raise_()
+    dialog.start()
+
+
+def _open_rerip(api: PluginApi, files: list, preselect: list, disc: dict) -> None:
+    """Open the Verify and re-rip window for files, at cdcheckd's request."""
+    tracks = [rerip.Track(i, rerip.title_of(p), p) for i, p in enumerate(files, 1)]
+    title = os.path.basename(os.path.dirname(files[0]))
+    _open_dialog(api, title, tracks, disc['toc'], preselect)
+
+
 class CDRipper(QtCore.QObject):
     """Main class for handling CD ripping and encoding."""
     def __init__(self, api: PluginApi, album: Any) -> None:
@@ -55,6 +124,7 @@ class CDRipper(QtCore.QObject):
         self.log = api.logger
         self.album = album
         self.discid: Optional[str] = None
+        self.toc = ''
         self._ripping: bool = False
 
         self.widget = RipCDDialog(self.tagger.window)
@@ -73,11 +143,33 @@ class CDRipper(QtCore.QObject):
         disc = Disc()
         disc.read(device)
         self.discid = disc.id
+        self.toc = bridge.disc_info(disc)['toc']
         self.log.debug(f'CD has discid: {disc.id}')
         self.rip()
         result = self.widget.exec()
         if result == QDialog.DialogCode.Rejected:
             self._cleanup()
+        elif self._verify_after_rip():
+            self.verify()
+
+    def _verify_after_rip(self) -> bool:
+        cfg = self.api.plugin_config
+        return bool(cfg['verify_after_rip']) and os.access(cfg['verifier'], os.X_OK)
+
+    def verify(self) -> None:
+        """Verify the new rip while the CD is still in the drive.
+
+        The window is modal: new files are still in the temporary directory,
+        and saving in Picard moves them.
+        """
+        files = sorted(self._flac_files, key=lambda f: int(f[1].metadata['tracknumber'] or 0))
+        tracks = [rerip.Track(i, track.metadata['title'], path)
+                  for i, (path, track) in enumerate(files, 1)]
+        dialog = rerip_dialog.ReRipDialog(self.tagger.window, self.api.plugin_config,
+                                          self.album.metadata['album'], tracks, self.toc,
+                                          log=self.log)
+        QtCore.QTimer.singleShot(0, dialog.start)
+        dialog.exec()
 
     def _newProcess(self, output_widget: Any) -> QtCore.QProcess:
         """Create a new QProcess for running external commands."""
@@ -149,14 +241,12 @@ class CDRipper(QtCore.QObject):
         """Handler for when encoding finishes for a track."""
         self._encode_process_count -= 1
         if self._encode_process_count == 0:
+            placed = []
             for path, track in self._flac_files:
-                f = self.tagger.format_registry.open(path)
-                if f is None:
-                    self.log.error(f'Could not open encoded file: {path}')
-                    continue
-                self.tagger.files[path] = f
-                f.move(track)
-                f.load(lambda *_, **__: True)
+                path = self._place(path, track)
+                if path:
+                    placed.append((path, track))
+            self._flac_files = placed
 
             if len(self._flac_files) != self._expected_num_tracks:
                 self.log.debug('Ripping/encoding was aborted.')
@@ -166,6 +256,61 @@ class CDRipper(QtCore.QObject):
             self.album.load()
             self.widget.ui.finished_button.setEnabled(True)
             self._tmpdir = tempfile.mkdtemp()
+
+    def _place(self, path: str, track: Any) -> Optional[str]:
+        """Put a new rip on its track, replacing the track's old file if any.
+
+        A re-rip must not end up beside the old rip: attached as a second
+        file on the track, or saved by Picard as "Title (1).flac" because the
+        old file holds the name. So when the track already has a file, or a
+        file exists where saving would put this one, the new audio replaces
+        it in place, keeping its tags. Returns the track's file, or None.
+        """
+        f = self.tagger.format_registry.open(path)
+        if f is None:
+            self.log.error(f'Could not open encoded file: {path}')
+            return None
+        old = self._old_rip(f, path, track)
+        if old is None:
+            self.tagger.files[path] = f
+            f.move(track)
+            f.load(lambda *_, **__: True)
+            return path
+        try:
+            rerip.copy_tags(old, path)
+            rerip.replace_file(path, old)
+        except Exception as e:  # OSError, or mutagen's errors
+            self.log.error(f'Could not replace {old} with the new rip: {e}')
+            self.widget.ui.encode_output.appendPlainText(f'Could not replace {old}: {e}')
+            return None
+        os.remove(path)
+        self.widget.ui.encode_output.appendPlainText(f'Replaced {old}')
+        existing = self.tagger.files.get(old)
+        if existing is None:  # saved by an earlier rip, not loaded now
+            existing = self.tagger.format_registry.open(old)
+            if existing is None:
+                return None
+            self.tagger.files[old] = existing
+            existing.move(track)
+            existing.load(lambda *_, **__: True)
+        elif existing not in list(track.iterfiles()):
+            existing.move(track)
+        return old
+
+    def _old_rip(self, f: Any, path: str, track: Any) -> Optional[str]:
+        """The file an earlier rip of track left: on the track, or on disk
+        where Picard would save this one."""
+        for old in track.iterfiles():
+            if old.filename != path and os.path.isfile(old.filename):
+                return old.filename
+        try:
+            target = f.make_filename(path, track.metadata)
+        except Exception as e:  # a broken naming script
+            self.log.debug(f'Could not work out where {path} will be saved: {e}')
+            return None
+        if target != path and os.path.isfile(target):
+            return target
+        return None
 
     def errorHandler(self, error: QtCore.QProcess.ProcessError) -> None:
         """Handler for process errors."""
@@ -207,6 +352,9 @@ class CDRipperOptionsPage(OptionsPage):
         self.ui.bridge_enabled.setChecked(bool(self.api.plugin_config['bridge_enabled']))
         self.ui.bridge_port.setValue(int(self.api.plugin_config['bridge_port']))
         self.ui.bridge_token.setText(self.api.plugin_config['bridge_token'])
+        self.ui.verifier.setText(self.api.plugin_config['verifier'])
+        self.ui.verify_opts.setText(self.api.plugin_config['verify_opts'])
+        self.ui.verify_after_rip.setChecked(bool(self.api.plugin_config['verify_after_rip']))
 
     def save(self) -> None:
         """Save settings from the options UI."""
@@ -215,6 +363,9 @@ class CDRipperOptionsPage(OptionsPage):
         self.api.plugin_config['bridge_enabled'] = self.ui.bridge_enabled.isChecked()
         self.api.plugin_config['bridge_port'] = self.ui.bridge_port.value()
         self.api.plugin_config['bridge_token'] = self.ui.bridge_token.text()
+        self.api.plugin_config['verifier'] = self.ui.verifier.text()
+        self.api.plugin_config['verify_opts'] = self.ui.verify_opts.text()
+        self.api.plugin_config['verify_after_rip'] = self.ui.verify_after_rip.isChecked()
         _restart_bridge(self.api)
 
 
@@ -272,7 +423,9 @@ def _restart_bridge(api: PluginApi) -> None:
     port, token = settings
     global _bridge
     try:
-        _bridge = bridge.Bridge(bridge.Handlers(api, _plugin_version()), token, port,
+        handlers = bridge.Handlers(api, _plugin_version(),
+                                   open_rerip=lambda *args: _open_rerip(api, *args))
+        _bridge = bridge.Bridge(handlers, token, port,
                                 bridge.make_main_thread_caller())
         _bridge.start()
         api.logger.info(f'CD Ripper bridge listening on port {port}')
@@ -292,4 +445,5 @@ def enable(api: PluginApi) -> None:
     _migrate_v2_settings(api)
     api.register_options_page(CDRipperOptionsPage)
     api.register_album_action(RipCD)
+    api.register_album_action(VerifyCD)
     _restart_bridge(api)

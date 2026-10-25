@@ -7,6 +7,9 @@ Endpoints (all JSON, all need ``Authorization: Bearer <token>``):
     GET  /disc    Read the CD in the drive: disc ID, TOC string, MCN and ISRCs.
     POST /load    {paths[], release?, discid?}: load a release and add the files
                   to it, with the disc ID so that saving writes MUSICBRAINZ_DISCID.
+    POST /rerip   {files[], tracks[], discid?}: open the Verify and re-rip window
+                  for the files (in track order) with the tracks ticked. The CD
+                  in the drive must be discid.
 
 Handlers run on Qt's main thread, as Picard's own browser integration does.
 The HTTP server itself runs on a worker thread.
@@ -38,11 +41,14 @@ class Handlers:
     """The bridge's operations. Every method runs on the main thread."""
 
     def __init__(self, api: Any, plugin_version: str,
-                 schedule: Optional[Callable[[int, Callable[[], None]], None]] = None) -> None:
+                 schedule: Optional[Callable[[int, Callable[[], None]], None]] = None,
+                 open_rerip: Optional[Callable[[list, list, dict], None]] = None) -> None:
         self.api = api
         self.plugin_version = plugin_version
         # schedule(ms, fn) runs fn on the main thread later; QTimer by default.
         self.schedule = schedule or _qt_single_shot
+        # open_rerip(files, tracks, disc) opens the Verify and re-rip window.
+        self.open_rerip = open_rerip
 
     def status(self, _: dict) -> dict:
         from picard import PICARD_VERSION_STR
@@ -54,23 +60,7 @@ class Handlers:
         }
 
     def disc(self, _: dict) -> dict:
-        from picard.disc import Disc
-        device = self.api.global_config.setting['cd_lookup_device'].split(',', 1)[0]
-        disc = Disc()
-        try:
-            disc.read(device)
-        except Exception as e:  # discid.DiscError, or no drive.
-            raise BridgeError(409, f'could not read disc in {device}: {e}')
-        raw = getattr(disc, '_discid', None)
-        toc = getattr(disc, 'toc_string', None) or getattr(raw, 'toc_string', '')
-        isrcs = [t.isrc for t in (getattr(disc, 'tracks', None) or [])
-                 if getattr(t, 'isrc', None)]
-        return {
-            'discid': disc.id,
-            'toc': toc or '',
-            'mcn': getattr(disc, 'mcn', None) or '',
-            'isrcs': isrcs,
-        }
+        return read_disc(self.api)
 
     def load(self, req: dict) -> dict:
         paths = req.get('paths')
@@ -89,6 +79,29 @@ class Handlers:
         tagger.add_paths(paths)
         if album is not None:
             self._settle(album, paths, SETTLE_TIMEOUT_MS)
+        return {}
+
+    def rerip(self, req: dict) -> dict:
+        files, tracks, discid = req.get('files'), req.get('tracks'), req.get('discid') or ''
+        if (not isinstance(files, list) or not files
+                or not all(isinstance(p, str) and os.path.isabs(p) for p in files)):
+            raise BridgeError(400, 'files must be a non-empty list of absolute paths')
+        if (not isinstance(tracks, list)
+                or not all(type(n) is int and 1 <= n <= len(files) for n in tracks)):
+            raise BridgeError(400, f'tracks must be track numbers from 1 to {len(files)}')
+        if not isinstance(discid, str):
+            raise BridgeError(400, 'discid must be a string')
+        missing = [p for p in files if not os.path.isfile(p)]
+        if missing:
+            raise BridgeError(404, f'no such file: {missing[0]}')
+        if self.open_rerip is None:
+            raise BridgeError(501, 're-ripping is not available')
+        disc = read_disc(self.api)
+        if discid and disc['discid'] != discid:
+            raise BridgeError(409, f'the CD in the drive is {disc["discid"]}, not {discid}')
+        if len(disc['toc'].split()) - 3 != len(files):  # "1 N leadout offset1 ... offsetN"
+            raise BridgeError(409, f'the CD in the drive does not have {len(files)} tracks')
+        self.open_rerip(files, sorted(set(tracks)), disc)
         return {}
 
     def _settle(self, album: Any, paths: list, remaining_ms: int) -> None:
@@ -129,6 +142,37 @@ class Handlers:
             getattr(logger, level)(msg)
 
 
+def read_disc(api: Any) -> dict:
+    """Read the CD in Picard's CD lookup drive."""
+    from picard.disc import Disc
+    device = api.global_config.setting['cd_lookup_device'].split(',', 1)[0]
+    disc = Disc()
+    try:
+        disc.read(device)
+    except Exception as e:  # discid.DiscError, or no drive.
+        raise BridgeError(409, f'could not read disc in {device}: {e}')
+    return disc_info(disc)
+
+
+def disc_info(disc: Any) -> dict:
+    """The disc ID, TOC string, MCN and ISRCs of a disc Picard has read."""
+    raw = getattr(disc, '_discid', None)
+    toc = getattr(disc, 'toc_string', None) or getattr(raw, 'toc_string', '')
+    # Picard 3 keeps ISRCs as {track number: ISRC}, and tracks is a count.
+    found = getattr(disc, 'isrcs', None)
+    if isinstance(found, dict):
+        isrcs = [isrc for _, isrc in sorted(found.items()) if isrc]
+    else:
+        tracks = getattr(disc, 'tracks', None)
+        isrcs = [t.isrc for t in tracks if getattr(t, 'isrc', None)] if isinstance(tracks, list) else []
+    return {
+        'discid': disc.id,
+        'toc': toc or '',
+        'mcn': getattr(disc, 'mcn', None) or '',
+        'isrcs': isrcs,
+    }
+
+
 def _under(filename: str, paths: list) -> bool:
     """Whether filename is one of paths, or directly in one of them."""
     return any(filename == p or os.path.dirname(filename) == p.rstrip(os.sep) for p in paths)
@@ -155,6 +199,7 @@ class Bridge:
             ('GET', '/status'): handlers.status,
             ('GET', '/disc'): handlers.disc,
             ('POST', '/load'): handlers.load,
+            ('POST', '/rerip'): handlers.rerip,
         }
         self.token = token
         self.call_on_main = call_on_main
