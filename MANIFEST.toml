@@ -15,7 +15,7 @@ verifies.
 Requires the `cdparanoia` and `flac` command line tools in `/usr/bin`, and
 `accuraterip-verify` (from goldphish/accuraterip-verifier) for verification.
 """
-version = "1.1.0"
+version = "1.2.0"
 api = ["3.0"]
 authors = ["Dan Lange"]
 license = "GPL-2.0-or-later"

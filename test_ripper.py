@@ -146,6 +146,13 @@ class RipAgainTest(unittest.TestCase):
         self.assertEqual(mutagen.flac.FLAC(old)['title'], ['Song 1'])
         self.assertEqual(sorted(os.listdir(self.library)), ['01 Song 1.flac'])
 
+    def test_paranoia_lines(self):
+        report = self.plugin.rerip.ParanoiaReport([0, 100])
+        report.feed(f'##: 0 [read] @ 0\n##: 6 [skip] @ {150 * 1176}\n')
+        self.assertEqual(self.plugin._paranoia_lines(report), 'cdparanoia, track 2: 1 skip')
+        self.assertEqual(self.plugin._paranoia_lines(self.plugin.rerip.ParanoiaReport()),
+                         'cdparanoia reported no problems.')
+
     def test_first_rip_attaches_the_new_file(self):
         track = FakeTrack(1)
         new = os.path.join(self.tmp, '01 Song 1.flac')

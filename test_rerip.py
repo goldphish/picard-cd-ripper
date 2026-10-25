@@ -46,12 +46,28 @@ def encode(wav, out, **tags):
 
 class ArgsTest(unittest.TestCase):
     def test_cdparanoia_args_replace_the_span(self):
-        self.assertEqual(rerip.cdparanoia_args('--batch 1:-', 3), ['--batch', '--', '3'])
-        self.assertEqual(rerip.cdparanoia_args('-B -z 1-', 12), ['-B', '-z', '--', '12'])
-        self.assertEqual(rerip.cdparanoia_args('', 1), ['--batch', '--', '1'])
+        self.assertEqual(rerip.cdparanoia_args('--batch 1:-', 3), ['-e', '--batch', '--', '3'])
+        self.assertEqual(rerip.cdparanoia_args('-B -z 1-', 12), ['-e', '-B', '-z', '--', '12'])
+        self.assertEqual(rerip.cdparanoia_args('', 1), ['-e', '--batch', '--', '1'])
         # A value, not a span: kept.
-        self.assertEqual(rerip.cdparanoia_args('-B -O 6', 2), ['-B', '-O', '6', '--', '2'])
-        self.assertEqual(rerip.cdparanoia_args('-d /dev/sr1 -B', 2), ['-d', '/dev/sr1', '-B', '--', '2'])
+        self.assertEqual(rerip.cdparanoia_args('-B -O 6', 2), ['-e', '-B', '-O', '6', '--', '2'])
+        self.assertEqual(rerip.cdparanoia_args('-e -d /dev/sr1 -B', 2), ['-e', '-d', '/dev/sr1', '-B', '--', '2'])
+
+    def test_paranoia_report(self):
+        # Tracks start at sectors 0, 250 and 600; positions are in words.
+        r = rerip.ParanoiaReport(rerip.toc_starts('1 3 1000 150 400 750'))
+        shown = r.feed('Ripping from sector 0\n##: 0 [read] @ 1176\n##: 6 [sk')
+        shown += r.feed(f'ip] @ {300 * 1176}\n##: 6 [skip] @ {301 * 1176}\n##: 5 [scratch repair] @ {700 * 1176}\nDone.')
+        shown += r.flush()
+        self.assertEqual(shown, 'Ripping from sector 0\nDone.')
+        self.assertEqual(dict(r.track(2)), {'skip': 2})
+        self.assertEqual(rerip.paranoia_summary(r.track(2)), '2 skips')
+        self.assertEqual(rerip.paranoia_summary(r.track(3)), '1 scratch repair')
+        self.assertEqual(rerip.paranoia_summary(r.track(1)), 'no problems')
+
+    def test_describe_ctdb_track(self):
+        self.assertEqual(rerip.describe({'verified': True, 'confidence': 7, 'source': 'ctdb'}),
+                         'verified by the CUETools DB (confidence 7)')
 
     def test_verifier_args(self):
         self.assertEqual(rerip.verifier_args('--offset 6', '1 2 500 150 300', '/v'),
@@ -128,10 +144,19 @@ class FilesTest(unittest.TestCase):
         self.assertEqual(rerip.title_of(new), 'Song')
 
 
+# Writes the same audio for a track every time, and reports events as
+# cdparanoia -e does, with a skip on the tracks listed in skips.
 FAKE_CDPARANOIA = '''#!/usr/bin/env python3
-import os, struct, sys, wave
+import json, os, struct, sys, wave
+cfg = json.load(open(os.environ['FAKE_VERIFIER_CONFIG']))
 track = int(sys.argv[-1])
-assert sys.argv[-2] == '--' and '--batch' in sys.argv, sys.argv
+assert sys.argv[-2] == '--' and '--batch' in sys.argv and '-e' in sys.argv, sys.argv
+for i in range(50):
+    sys.stderr.write('##: 0 [read] @ %d\\n' % (i * 1176))
+if track in cfg.get('skips', []):
+    sys.stderr.write('##: 6 [skip] @ 23520\\n')
+sys.stderr.write('##: 7 [jitter] @ 23520\\n')
+print('outputting to track%02d.cdda.wav' % track)
 with wave.open('track%02d.cdda.wav' % track, 'wb') as w:
     w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100)
     w.writeframes(b''.join(struct.pack('<hh', i % 1000, i % 1000) for i in range(10 * 588)))
@@ -203,9 +228,9 @@ class DialogTest(unittest.TestCase):
         os.chmod(path, 0o755)
         return path
 
-    def _dialog(self, fail, fail_new, preselect=None):
+    def _dialog(self, fail, fail_new, preselect=None, skips=()):
         with open(self.cfg_path, 'w') as f:
-            json.dump({'fail': fail, 'fail_new': fail_new}, f)
+            json.dump({'fail': fail, 'fail_new': fail_new, 'skips': list(skips)}, f)
         config = {'cdparanoia_opts': '--batch 1:-', 'flac_opts': '--silent --verify --delete-input-file',
                   'verifier': self.verifier, 'verify_opts': '--offset 6'}
         self.mod.CDPARANOIA = self.cdparanoia
@@ -250,15 +275,77 @@ class DialogTest(unittest.TestCase):
         self.assertEqual(tags['title'], ['Song 2'])
         self.assertEqual(tags['replaygain_album_gain'], ['-7.00 dB'])
 
+    def _rerip(self, d, n):
+        d._tick([n])
+        d.rerip_selected()
+        self._wait(d)
+
     def test_rerip_keeps_the_original_when_the_new_rip_fails(self):
         d = self._dialog(fail=[2], fail_new=[2])
         d.start()
         self._wait(d)
-        d.rerip_selected()
-        self._wait(d)
-        self.assertIn('still does not verify, with the same CRC', self._result(d, 2))
-        self.assertIn('original kept', self._result(d, 2))
+        self._rerip(d, 2)
+        self.assertIn('still does not verify; original kept. Re-rip again', self._result(d, 2))
         self.assertEqual(read(self.tracks[1].path), self.before[1])
+        self.assertFalse(d.keep_button.isVisible())
+        self.assertEqual(d.consistent, {})
+
+    def test_keep_a_consistent_rerip(self):
+        # Two re-rips read the same audio without a skip: they can be kept,
+        # unverified, in place of a file that read differently.
+        d = self._dialog(fail=[2], fail_new=[2])
+        d.show()
+        d.start()
+        self._wait(d)
+        self._rerip(d, 2)
+        self._rerip(d, 2)
+        self.assertIn('read the same audio twice with no skips', self._result(d, 2))
+        self.assertTrue(d.keep_button.isVisible())
+        self.assertEqual(read(self.tracks[1].path), self.before[1])
+
+        d.keep_consistent()
+        self.assertIn('kept the consistent re-rip', self._result(d, 2))
+        self.assertIn('not verified', self._result(d, 2))
+        self.assertNotEqual(read(self.tracks[1].path), self.before[1])
+        self.assertEqual(mutagen.flac.FLAC(self.tracks[1].path)['title'], ['Song 2'])
+        self.assertFalse(d.keep_button.isVisible())
+        for i in (0, 2):
+            self.assertEqual(read(self.tracks[i].path), self.before[i])
+
+    def test_no_keeping_after_a_skip(self):
+        # The same audio twice, but cdparanoia gave up on part of it: it may
+        # have filled the gap the same way both times.
+        d = self._dialog(fail=[2], fail_new=[2], skips=[2])
+        d.show()
+        d.start()
+        self._wait(d)
+        self._rerip(d, 2)
+        self._rerip(d, 2)
+        self.assertIn('cdparanoia skipped parts of it', self._result(d, 2))
+        self.assertEqual(d.consistent, {})
+        self.assertFalse(d.keep_button.isVisible())
+        self.assertEqual(d.table.item(1, 4).text(), '1 skip, 1 jitter fix')
+
+    def test_cdparanoia_events_are_counted_not_shown(self):
+        d = self._dialog(fail=[2], fail_new=[], preselect=[2])
+        d.start()
+        self._rerip(d, 2)
+        log = d.output.toPlainText()
+        self.assertNotIn('##:', log)
+        self.assertIn('outputting to track02.cdda.wav', log)
+        self.assertIn('cdparanoia, track 2: 1 jitter fix', log)
+        self.assertEqual(d.table.item(1, 4).text(), '1 jitter fix')
+        self.assertEqual(d.table.item(0, 4).text(), '')
+
+    def test_same_audio_as_the_file(self):
+        # The re-rip reads exactly what the file holds: nothing to keep.
+        d = self._dialog(fail=[2], fail_new=[2])
+        d.start()
+        self._wait(d)
+        d._original_md5 = lambda n: d.attempts[n][-1].md5 if d.attempts.get(n) else b''
+        self._rerip(d, 2)
+        self.assertIn('read exactly the same audio as the current file', self._result(d, 2))
+        self.assertEqual(d.consistent, {})
 
     def test_preselected_tracks_skip_the_first_verify(self):
         # cdcheckd already verified the rip and names the failing tracks.
