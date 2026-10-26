@@ -160,15 +160,26 @@ def flac_args(opts: str, wav: str, out: str) -> list:
     return shlex.split(opts) + ['-o', out, wav]
 
 
-def verifier_args(opts: str, toc: str, directory: str) -> list:
+def verifier_args(opts: str, toc: str, directory: str, album: str = '') -> list:
     """accuraterip-verify arguments for one album in directory.
 
-    --force verifies even if a log says the album verified before.
+    --force verifies even if a log says the album verified before. album is
+    the album's own directory, whose files the links in directory stand in
+    for: the verifier names it in the result and, when the album verifies,
+    writes the log there.
     """
     args = shlex.split(opts) + ['--json', '--force']
     if toc:
         args += ['--toc', toc]
+    if album:
+        args += ['--album', album]
     return args + [directory]
+
+
+def album_dir(tracks: list) -> str:
+    """The directory the tracks' files are in, or '' if they are in several."""
+    dirs = {os.path.dirname(os.path.abspath(t.path)) for t in tracks}
+    return dirs.pop() if len(dirs) == 1 else ''
 
 
 def parse_result(output: str) -> dict:

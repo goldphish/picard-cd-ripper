@@ -73,6 +73,14 @@ class ArgsTest(unittest.TestCase):
         self.assertEqual(rerip.verifier_args('--offset 6', '1 2 500 150 300', '/v'),
                          ['--offset', '6', '--json', '--force', '--toc', '1 2 500 150 300', '/v'])
         self.assertEqual(rerip.verifier_args('', '', '/v'), ['--json', '--force', '/v'])
+        self.assertEqual(rerip.verifier_args('', '', '/v', '/music/a'),
+                         ['--json', '--force', '--album', '/music/a', '/v'])
+
+    def test_album_dir(self):
+        same = [rerip.Track(1, 'A', '/music/a/01.flac'), rerip.Track(2, 'B', '/music/a/02.flac')]
+        self.assertEqual(rerip.album_dir(same), '/music/a')
+        split = same + [rerip.Track(3, 'C', '/music/b/03.flac')]
+        self.assertEqual(rerip.album_dir(split), '')
 
     def test_parse_result(self):
         line = json.dumps({'status': 'MISS', 'tracks': [{'track': 1, 'verified': True},
@@ -168,6 +176,8 @@ FAKE_VERIFIER = '''#!/usr/bin/env python3
 import json, os, sys
 cfg = json.load(open(os.environ['FAKE_VERIFIER_CONFIG']))
 assert '--force' in sys.argv and '--toc' in sys.argv, sys.argv
+with open(os.environ['FAKE_VERIFIER_CONFIG'] + '.argv', 'w') as f:
+    json.dump(sys.argv[1:], f)
 view = sys.argv[-1]
 tracks = []
 for i, name in enumerate(sorted(os.listdir(view)), 1):
@@ -261,6 +271,11 @@ class DialogTest(unittest.TestCase):
         d = self._dialog(fail=[2], fail_new=[])
         d.start()
         self._wait(d)
+        # The verifier is told which album the links stand in for, so the
+        # log goes in its directory rather than among the links.
+        with open(self.cfg_path + '.argv') as f:
+            argv = json.load(f)
+        self.assertEqual(argv[argv.index('--album') + 1], os.path.dirname(self.tracks[0].path))
         self.assertEqual(self._ticked(d), [2])
         self.assertIn('did not verify', self._result(d, 2))
 
