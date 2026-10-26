@@ -126,7 +126,8 @@ class ReRipDialog(QtWidgets.QDialog):
             self._idle(f'Could not prepare the files for verification: {e}')
             return
         self._busy('Verifying against AccurateRip and the CUETools DB…')
-        args = rerip.verifier_args(self.config['verify_opts'], self.toc, self._view)
+        args = rerip.verifier_args(self.config['verify_opts'], self.toc, self._view,
+                                   rerip.album_dir(self.tracks))
         self._run(self.config['verifier'], args,
                   lambda _, out: self._verified(rerip.parse_result(out), replacements))
 
