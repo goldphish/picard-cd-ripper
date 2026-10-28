@@ -63,3 +63,7 @@ secrets:
     file: ./secrets/picard_bridge_token
   gcloud.json:
     file: ./secrets/gcloud.json
+
+networks:
+  default:
+    name: cdrip
