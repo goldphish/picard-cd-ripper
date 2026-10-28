@@ -41,19 +41,130 @@ class Track:
     path: str
 
 
-def cdparanoia_args(opts: str, track: int) -> list:
+def _without_span(opts: str) -> list:
+    """The configured options, which rip the whole disc, without their span."""
+    args = shlex.split(opts)
+    if args and _SPAN.match(args[-1]) and (len(args) < 2 or args[-2] not in _VALUE_OPTS):
+        args.pop()
+    return args
+
+
+def cdparanoia_args(opts: str, track: int, shift: int = 0) -> list:
     """cdparanoia arguments that rip one track to trackNN.cdda.wav.
 
     The configured options rip the whole disc, so their span is dropped and
     replaced with the track. Batch mode is what names the output file, and
-    -e makes cdparanoia report what it ran into (see ParanoiaReport).
+    -e makes cdparanoia report what it ran into (see ParanoiaReport). shift
+    is added to the sample offset (see alignment).
     """
-    args = shlex.split(opts)
-    if args and _SPAN.match(args[-1]) and (len(args) < 2 or args[-2] not in _VALUE_OPTS):
-        args.pop()
+    args = with_sample_offset(_without_span(opts), shift)
     if not any(a in ('-B', '--batch') for a in args):
         args.append('--batch')
     return with_reports(args) + ['--', str(track)]
+
+
+def with_sample_offset(args: list, shift: int) -> list:
+    """args with shift added to cdparanoia's sample offset (-O)."""
+    if not shift:
+        return args
+    out = list(args)
+    for i, a in enumerate(out):
+        try:
+            if a in ('-O', '--sample-offset') and i + 1 < len(out):
+                out[i + 1] = str(int(out[i + 1]) + shift)
+                return out
+            if a.startswith('--sample-offset='):
+                out[i] = f'--sample-offset={int(a.split("=", 1)[1]) + shift}'
+                return out
+            if a.startswith('-O') and len(a) > 2:
+                out[i] = f'-O{int(a[2:]) + shift}'
+                return out
+        except ValueError:
+            continue
+    return out + ['-O', str(shift)]
+
+
+# Output format options, which a read for lining up replaces with raw output.
+_FORMAT_OPTS = {
+    '-w', '--output-wav', '-a', '--output-aifc', '-f', '--output-aiff',
+    '-p', '--output-raw', '-r', '--output-raw-little-endian',
+    '-R', '--output-raw-big-endian', '-B', '--batch', '-e', '--stderr-progress',
+}
+
+# What a read for lining up covers: 5 seconds, from the middle of a track,
+# searched for in the track's file up to MAX_SHIFT samples either way of
+# where it should be (as far as the CUETools DB looks for pressings).
+LINE_UP_SECTORS = 375
+MAX_SHIFT = 5880
+_SECTOR = 588  # samples
+
+
+def line_up_start(total_samples: int) -> Optional[int]:
+    """The sector of a track to start a read for lining up at, or None if
+    the track is too short."""
+    sectors = total_samples // _SECTOR
+    margin = MAX_SHIFT // _SECTOR + 1
+    if sectors < LINE_UP_SECTORS + 2 * margin:
+        return None
+    return (sectors - LINE_UP_SECTORS) // 2
+
+
+def _span_time(sector: int) -> str:
+    """A position in a track as cdparanoia's span takes it: m:ss.ff."""
+    seconds, frames = divmod(sector, 75)
+    return f'{seconds // 60}:{seconds % 60:02d}.{frames:02d}'
+
+
+def line_up_args(opts: str, track: int, start: int, out: str, shift: int = 0) -> list:
+    """cdparanoia arguments that read LINE_UP_SECTORS of track from sector
+    start into out, as raw little-endian samples."""
+    args = [a for a in _without_span(opts) if a not in _FORMAT_OPTS]
+    span = f'{track}[{_span_time(start)}]-{track}[{_span_time(start + LINE_UP_SECTORS - 1)}]'
+    return with_sample_offset(args, shift) + ['-r', '--', span, out]
+
+
+def decode(flac: str, path: str) -> bytes:
+    """A FLAC file's audio as raw little-endian samples."""
+    import subprocess
+    return subprocess.run([flac, '-d', '-s', '-c', '--force-raw-format', '--endian=little',
+                           '--sign=signed', path], capture_output=True, check=True).stdout
+
+
+def total_samples(path: str) -> int:
+    from mutagen.flac import FLAC
+    return FLAC(path).info.total_samples
+
+
+def alignment(read: bytes, start: int, track: bytes) -> Optional[int]:
+    """How many samples later in its file the audio of a read of a track is.
+
+    read holds raw samples from sample start of the track on, track the
+    track's file decoded. A re-rip lines up with the file when it is read
+    with the sample offset less this (cdparanoia's -O reads later samples
+    the higher it is). None when the read can't be found in the file.
+
+    Pieces of the read are looked for on their own, so a damaged part of
+    the file does not stop the rest from being found; digital silence,
+    which is found anywhere, is skipped.
+    """
+    piece = 4 * _SECTOR * 4
+    votes: Counter = Counter()
+    for k in range(8):
+        at = (len(read) - piece) * (2 * k + 1) // 16 // 4 * 4
+        chunk = read[at:at + piece]
+        if len(chunk) < piece or chunk.count(chunk[:4]) == piece // 4:
+            continue
+        expected = start + at // 4
+        lo, hi = max(0, expected - MAX_SHIFT) * 4, (expected + MAX_SHIFT) * 4 + piece
+        pos = track.find(chunk, lo, hi)
+        while pos != -1 and pos % 4:
+            pos = track.find(chunk, pos + 1, hi)
+        if pos != -1:
+            votes[pos // 4 - expected] += 1
+    if not votes:
+        return None
+    d, n = votes.most_common(1)[0]
+    return d if 2 * n > sum(votes.values()) else None
 
 
 def with_reports(args: list) -> list:
