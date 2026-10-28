@@ -10,6 +10,7 @@ the user keeps a re-rip that read the same twice without a skip.
 
 import os
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -49,6 +50,9 @@ class ReRipDialog(QtWidgets.QDialog):
         self.paranoia: dict = dict(paranoia or {})  # track number -> cdparanoia's counts
         self.attempts: dict = {}  # track number -> its re-rips, oldest first
         self.consistent: dict = {}  # track number -> a re-rip that may be kept
+        # What to add to cdparanoia's sample offset so re-rips line up with
+        # the files, once known (see _line_up).
+        self.shift: Optional[int] = None
         self._process: Optional[QtCore.QProcess] = None
         self._workdir = tempfile.mkdtemp(prefix='cdripper-rerip-')
         self._view = os.path.join(self._workdir, 'view')
@@ -117,8 +121,10 @@ class ReRipDialog(QtWidgets.QDialog):
         else:
             self.verify()
 
-    def verify(self, replacements: Optional[dict] = None) -> None:
-        """Verify the album, with replacements (new rips) standing in for files."""
+    def verify(self, replacements: Optional[dict] = None,
+               then: Optional[Callable[[], None]] = None) -> None:
+        """Verify the album, with replacements (new rips) standing in for files,
+        then call then."""
         replacements = replacements or {}
         try:
             rerip.make_view(self.tracks, replacements, self._view)
@@ -129,9 +135,10 @@ class ReRipDialog(QtWidgets.QDialog):
         args = rerip.verifier_args(self.config['verify_opts'], self.toc, self._view,
                                    rerip.album_dir(self.tracks))
         self._run(self.config['verifier'], args,
-                  lambda _, out: self._verified(rerip.parse_result(out), replacements))
+                  lambda _, out: self._verified(rerip.parse_result(out), replacements, then))
 
-    def _verified(self, result: dict, replacements: dict) -> None:
+    def _verified(self, result: dict, replacements: dict,
+                  then: Optional[Callable[[], None]] = None) -> None:
         tracks = rerip.track_results(result)
         replaced = []
         for n, new in sorted(replacements.items()):
@@ -152,6 +159,8 @@ class ReRipDialog(QtWidgets.QDialog):
             self._log('info', f'CD Ripper: replaced track(s) {replaced} with verified re-rips')
         self.results.update(tracks)
         self._show(result, replaced)
+        if then is not None:
+            then()
 
     def _unverified(self, n: int, new: str) -> str:
         """Say what a re-rip that does not verify tells, and offer to keep it
@@ -215,7 +224,92 @@ class ReRipDialog(QtWidgets.QDialog):
         for n in numbers:
             self.notes.pop(n, None)
             self.consistent.pop(n, None)
-        self._rip_next(numbers, {})
+        self._line_up(numbers)
+
+    # ---- lining re-rips up with the files ---------------------------------
+    #
+    # The files may have been ripped at another sample offset than the drive
+    # reads at now: an older rip, from another drive or program. A re-rip
+    # read as the drive reads would then be out of line with the files
+    # around it, its first or last samples belonging to the next track. So
+    # before the first re-rip, part of a track AccurateRip verified is read
+    # and found in its file, and the re-rips are read with the sample offset
+    # that lines that read up. A second read with that offset checks it.
+
+    def _line_up(self, numbers: list, verified: bool = False) -> None:
+        if self.shift is not None:
+            self._rip_next(numbers, {})
+            return
+        if not self.results and not verified:
+            self.verify(then=lambda: self._line_up(numbers, True))
+            return
+        ref = self._reference(numbers)
+        if ref is None:
+            self.output.appendPlainText(
+                'No track AccurateRip verified is long enough to line the re-rips up with, '
+                "so they are read at the drive's offset.")
+            self._rip_next(numbers, {})
+            return
+        self._read_to_line_up(numbers, *ref, 0, False)
+
+    def _reference(self, numbers: list) -> Optional[tuple]:
+        """A track AccurateRip verified and where to read it, or None."""
+        for n in sorted(self.results):
+            r = self.results[n]
+            if n in numbers or not r.get('verified') or r.get('source'):
+                continue
+            try:
+                start = rerip.line_up_start(rerip.total_samples(self._track(n).path))
+            except Exception:  # mutagen's errors
+                continue
+            if start is not None:
+                return n, start
+        return None
+
+    def _read_to_line_up(self, numbers: list, ref: int, start: int, shift: int,
+                         checking: bool) -> None:
+        out = os.path.join(self._workdir, 'line-up.raw')
+        if os.path.exists(out):
+            os.remove(out)
+        self._busy(f'Reading part of track {ref} to line the re-rips up with the files…')
+        args = rerip.line_up_args(self.config['cdparanoia_opts'], ref, start, out, shift)
+        self._run(CDPARANOIA, args, lambda code, _: self._read_for_line_up(
+            numbers, ref, start, shift, checking, code, out))
+
+    def _read_for_line_up(self, numbers: list, ref: int, start: int, shift: int,
+                          checking: bool, code: int, out: str) -> None:
+        if code != 0 or not os.path.exists(out):
+            self._idle(f'cdparanoia could not read track {ref} (exit code {code}). '
+                       'Is the CD in the drive?')
+            return
+        with open(out, 'rb') as f:
+            read = f.read()
+        os.remove(out)
+        try:
+            d = rerip.alignment(read, start * 588, rerip.decode(FLAC, self._track(ref).path))
+        except (OSError, subprocess.CalledProcessError) as e:
+            self._idle(f'Could not decode track {ref} to line the re-rips up with it: {e}')
+            return
+        if d == 0:
+            self.shift = shift
+            if shift:
+                self.output.appendPlainText(
+                    f'Re-rips are read with {shift:+d} on the sample offset to line up with the files.')
+            self._rip_next(numbers, {})
+        elif checking:
+            off = 'could not be found in its file' if d is None else f'was still {d:+d} samples out of line'
+            self._idle(f'Read with {shift:+d} on the sample offset, track {ref} {off}, so re-rips '
+                       'would not fit between the files. Nothing was re-ripped.')
+        elif d is None:
+            self.output.appendPlainText(
+                f'What was read of track {ref} could not be found in its file, so the re-rips '
+                "are read at the drive's offset.")
+            self._rip_next(numbers, {})
+        else:
+            self.output.appendPlainText(
+                f'The files are {d:+d} samples out of line with what the drive reads; '
+                'checking a read with the sample offset to match.')
+            self._read_to_line_up(numbers, ref, start, shift - d, True)
 
     def _rip_next(self, numbers: list, done: dict) -> None:
         if not numbers:
@@ -223,7 +317,7 @@ class ReRipDialog(QtWidgets.QDialog):
             return
         n, rest = numbers[0], numbers[1:]
         self._busy(f'Ripping track {n}…')
-        args = rerip.cdparanoia_args(self.config['cdparanoia_opts'], n)
+        args = rerip.cdparanoia_args(self.config['cdparanoia_opts'], n, self.shift or 0)
         report = rerip.ParanoiaReport()
         self._run(CDPARANOIA, args, lambda code, _: self._ripped(n, code, report, rest, done),
                   show=report.feed, flush=report.flush)

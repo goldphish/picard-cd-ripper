@@ -1,6 +1,7 @@
 import importlib
 import json
 import os
+import random
 import shutil
 import stat
 import struct
@@ -52,6 +53,34 @@ class ArgsTest(unittest.TestCase):
         # A value, not a span: kept.
         self.assertEqual(rerip.cdparanoia_args('-B -O 6', 2), ['-e', '-B', '-O', '6', '--', '2'])
         self.assertEqual(rerip.cdparanoia_args('-e -d /dev/sr1 -B', 2), ['-e', '-d', '/dev/sr1', '-B', '--', '2'])
+
+    def test_sample_offset(self):
+        self.assertEqual(rerip.cdparanoia_args('--batch 1:-', 3, -42), ['-e', '--batch', '-O', '-42', '--', '3'])
+        self.assertEqual(rerip.with_sample_offset(['-B', '-O', '6'], -42), ['-B', '-O', '-36'])
+        self.assertEqual(rerip.with_sample_offset(['--sample-offset=6'], 4), ['--sample-offset=10'])
+        self.assertEqual(rerip.with_sample_offset(['-O6'], 4), ['-O10'])
+        self.assertEqual(rerip.with_sample_offset(['-O', '6'], 0), ['-O', '6'])
+
+    def test_line_up_args(self):
+        self.assertEqual(rerip.line_up_args('-d /dev/sr1 -w --batch 1:-', 3, 4500, '/w/l.raw', -42),
+                         ['-d', '/dev/sr1', '-O', '-42', '-r', '--', '3[1:00.00]-3[1:04.74]', '/w/l.raw'])
+        self.assertIsNone(rerip.line_up_start(300 * 588))
+        self.assertEqual(rerip.line_up_start(1375 * 588), 500)
+
+    def test_alignment(self):
+        rng = random.Random(1)
+        track = rng.randbytes(1000 * 588 * 4)
+        start = 300 * 588
+        for d in (0, 42, -42, -5000):
+            read = track[(start + d) * 4:(start + d + 375 * 588) * 4]
+            self.assertEqual(rerip.alignment(read, start, track), d)
+        # Damage in a few places doesn't hide the rest.
+        read = bytearray(track[(start + 42) * 4:(start + 42 + 375 * 588) * 4])
+        for at in (20000, 300000):
+            read[at:at + 4000] = bytes(4000)
+        self.assertEqual(rerip.alignment(bytes(read), start, track), 42)
+        self.assertIsNone(rerip.alignment(bytes(375 * 588 * 4), start, track))
+        self.assertIsNone(rerip.alignment(rng.randbytes(375 * 588 * 4), start, track))
 
     def test_paranoia_report(self):
         # Tracks start at sectors 0, 250 and 600; positions are in words.
@@ -168,6 +197,36 @@ print('outputting to track%02d.cdda.wav' % track)
 with wave.open('track%02d.cdda.wav' % track, 'wb') as w:
     w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100)
     w.writeframes(b''.join(struct.pack('<hh', i % 1000, i % 1000) for i in range(10 * 588)))
+'''
+
+# A drive with a disc in it, given as raw audio with its tracks' starts.
+# -O reads later samples the higher it is, or earlier ones if the config
+# says its sign is inverted. Rips a track as batch mode does, or a span of
+# one as raw samples to a file.
+FAKE_DISC_CDPARANOIA = '''#!/usr/bin/env python3
+import json, os, re, sys, wave
+cfg = json.load(open(os.environ['FAKE_VERIFIER_CONFIG']))
+with open(os.environ['FAKE_VERIFIER_CONFIG'] + '.cdparanoia', 'a') as f:
+    f.write(json.dumps(sys.argv[1:]) + '\\n')
+disc = open(cfg['disc'], 'rb').read()
+args = sys.argv[1:]
+shift = int(args[args.index('-O') + 1]) if '-O' in args else 0
+if cfg.get('inverted'):
+    shift = -shift
+starts = cfg['starts']
+def audio(begin, end):
+    return disc[(begin + shift) * 4:(end + shift) * 4]
+if '-r' in args:
+    m = re.fullmatch(r'(\\d+)\\[(\\d+):(\\d+)\\.(\\d+)\\]-(\\d+)\\[(\\d+):(\\d+)\\.(\\d+)\\]', args[-2])
+    n, m1, s1, f1, _, m2, s2, f2 = map(int, m.groups())
+    a = starts[n - 1] + ((m1 * 60 + s1) * 75 + f1) * 588
+    b = starts[n - 1] + ((m2 * 60 + s2) * 75 + f2 + 1) * 588
+    open(args[-1], 'wb').write(audio(a, b))
+else:
+    n = int(args[-1])
+    with wave.open('track%02d.cdda.wav' % n, 'wb') as w:
+        w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100)
+        w.writeframes(audio(starts[n - 1], starts[n]))
 '''
 
 # Prints the result accuraterip-verify would: a track verifies unless it is
@@ -371,6 +430,82 @@ class DialogTest(unittest.TestCase):
         d.rerip_selected()
         self._wait(d)
         self.assertIn('file replaced', self._result(d, 3))
+
+    def _disc(self, files_shift):
+        """Put a disc in the fake drive whose files are files_shift samples
+        later than the drive reads it, as if ripped at another offset."""
+        self.cdparanoia = self._script(os.path.join(self.dir, 'bin'), 'cdparanoia', FAKE_DISC_CDPARANOIA)
+        sectors, pad = 420, 20 * 588
+        rng = random.Random(2)
+        disc = rng.randbytes((pad * 2 + 3 * sectors * 588) * 4)
+        starts = [pad + i * sectors * 588 for i in range(4)]
+        disc_path = os.path.join(self.dir, 'disc.raw')
+        with open(disc_path, 'wb') as f:
+            f.write(disc)
+        for t, a, b in zip(self.tracks, starts, starts[1:]):
+            wav = os.path.join(self.dir, 'in.wav')
+            with wave.open(wav, 'wb') as w:
+                w.setnchannels(2)
+                w.setsampwidth(2)
+                w.setframerate(44100)
+                w.writeframes(disc[(a - files_shift) * 4:(b - files_shift) * 4])
+            encode(wav, t.path, TITLE=t.title, TRACKNUMBER=str(t.number))
+        self.before = [read(t.path) for t in self.tracks]
+        return {'disc': disc_path, 'starts': starts}
+
+    def _disc_dialog(self, disc, **cfg):
+        d = self._dialog(fail=[2], fail_new=[])
+        with open(self.cfg_path) as f:
+            c = json.load(f)
+        c.update(disc, **cfg)
+        with open(self.cfg_path, 'w') as f:
+            json.dump(c, f)
+        self.mod.CDPARANOIA = self.cdparanoia
+        return d
+
+    def test_rerips_line_up_with_files_ripped_at_another_offset(self):
+        disc = self._disc(files_shift=42)
+        d = self._disc_dialog(disc)
+        d.start()
+        self._wait(d)
+        before = rerip.decode('flac', self.tracks[1].path)
+        self._rerip(d, 2)
+        self.assertEqual(d.shift, -42, d.output.toPlainText())
+        self.assertIn('file replaced', self._result(d, 2))
+        # The re-rip holds exactly the audio the file did: it fits.
+        self.assertEqual(rerip.decode('flac', self.tracks[1].path), before)
+        with open(self.cfg_path + '.cdparanoia') as f:
+            runs = [json.loads(line) for line in f]
+        self.assertEqual(len(runs), 3)  # a read, the check, the re-rip
+        self.assertEqual(runs[-1][-4:], ['-O', '-42', '--', '2'])
+
+        # Once known, the offset is used without reading again.
+        self._rerip(d, 3)
+        with open(self.cfg_path + '.cdparanoia') as f:
+            self.assertEqual(len(f.readlines()), 4)
+
+    def test_files_in_line_need_no_shift(self):
+        d = self._disc_dialog(self._disc(files_shift=0))
+        d.start()
+        self._wait(d)
+        self._rerip(d, 2)
+        self.assertEqual(d.shift, 0)
+        with open(self.cfg_path + '.cdparanoia') as f:
+            runs = [json.loads(line) for line in f]
+        self.assertEqual(len(runs), 2)
+        self.assertNotIn('-O', runs[-1])
+
+    def test_nothing_rerips_when_the_offset_does_not_line_up(self):
+        # cdparanoia shifts the other way from what's expected: the check
+        # catches it before anything is re-ripped.
+        d = self._disc_dialog(self._disc(files_shift=42), inverted=True)
+        d.start()
+        self._wait(d)
+        self._rerip(d, 2)
+        self.assertIn('still +84 samples out of line', d.status.text())
+        self.assertIn('Nothing was re-ripped', d.status.text())
+        self.assertIsNone(d.shift)
+        self.assertEqual(read(self.tracks[1].path), self.before[1])
 
     def test_missing_verifier(self):
         d = self._dialog(fail=[], fail_new=[])

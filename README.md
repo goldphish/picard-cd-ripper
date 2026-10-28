@@ -61,7 +61,11 @@ those tracks. Rather than ripping the whole CD again:
 4. Clean the disc if needed and click *Re-rip selected*. Each ticked track
    is ripped on its own (`cdparanoia --batch N`, which reads the same span
    as the full rip), encoded with your flac options, and given the old
-   file's tags, pictures and ReplayGain.
+   file's tags, pictures and ReplayGain. Before the first re-rip, 5 seconds
+   of a track AccurateRip verified are read and found in its file: if the
+   files were ripped at another offset (an older rip, another drive or
+   program), the re-rips are read with cdparanoia's `-O` adjusted to line up
+   with them, so they fit exactly between the files around them.
 5. The new rips are verified together with the album's other files. A
    track's file is replaced (atomically, in place) only if its new rip
    verifies, by AccurateRip or, track by track, by the CUETools DB.
