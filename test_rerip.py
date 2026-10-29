@@ -162,6 +162,24 @@ class FilesTest(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir)
 
+    def test_disc_label(self):
+        self.assertEqual(rerip.disc_label('2', '3'), 'disc 2 of 3')
+        self.assertEqual(rerip.disc_label('2/3'), 'disc 2 of 3')
+        self.assertEqual(rerip.disc_label('1', '2'), 'disc 1 of 2')
+        self.assertEqual(rerip.disc_label('2'), 'disc 2')
+        for one in (('1', '1'), ('1', ''), ('', ''), ('x', '2')):
+            self.assertEqual(rerip.disc_label(*one), '', one)
+
+    @unittest.skipUnless(HAVE_FLAC and mutagen, 'needs flac and mutagen')
+    def test_disc_of(self):
+        wav, path = os.path.join(self.dir, 't.wav'), os.path.join(self.dir, 't.flac')
+        write_wav(wav, 1)
+        encode(wav, path, DISCNUMBER='2', TOTALDISCS='2')
+        self.assertEqual(rerip.disc_of(path), 'disc 2 of 2')
+        encode(wav, path, TITLE='Song')
+        self.assertEqual(rerip.disc_of(path), '')
+        self.assertEqual(rerip.disc_of(os.path.join(self.dir, 'missing.flac')), '')
+
     def test_make_view(self):
         a, b = os.path.join(self.dir, 'a.flac'), os.path.join(self.dir, 'b.flac')
         new = os.path.join(self.dir, 'new.flac')
@@ -354,6 +372,18 @@ class DialogTest(unittest.TestCase):
 
     def _result(self, d, n):
         return d.table.item(n - 1, 3).text()
+
+    def test_names_the_disc_of_several(self):
+        d = self._dialog(fail=[], fail_new=[])
+        self.assertFalse(d.disc_note.isVisibleTo(d))
+        self.assertEqual(d.windowTitle(), 'Verify and re-rip: Album')
+        d = self.mod.ReRipDialog(None, d.config, 'Album', self.tracks, d.toc, [2], disc='disc 2 of 3')
+        self.addCleanup(d.reject)
+        self.assertEqual(d.windowTitle(), 'Verify and re-rip: Album, disc 2 of 3')
+        self.assertTrue(d.disc_note.isVisibleTo(d))
+        self.assertIn('Only its tracks', d.disc_note.text())
+        d.start()
+        self.assertIn('With disc 2 of 3 in the drive', d.status.text())
 
     def test_rerip_replaces_a_track_that_now_verifies(self):
         d = self._dialog(fail=[2], fail_new=[])

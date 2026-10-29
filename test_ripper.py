@@ -165,5 +165,47 @@ class RipAgainTest(unittest.TestCase):
         self.assertEqual(os.listdir(self.library), [])
 
 
+class AlbumTracksTest(unittest.TestCase):
+    """Of a release of several discs, only the one in the drive's tracks."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.plugin, cls.app = load_plugin()
+        except ImportError as e:
+            raise unittest.SkipTest(f'PyQt6: {e}')
+
+    def album(self):
+        tracks = []
+        for disc, discid in ((1, 'disc-one'), (2, 'disc-two')):
+            for n in (1, 2, 3):
+                t = FakeTrack(n)
+                t.metadata.update({'discnumber': str(disc), 'totaldiscs': '2',
+                                   '~musicbrainz_discids': discid, 'title': f'Disc {disc} song {n}'})
+                t.files = [SimpleNamespace(filename=f'/music/{disc}-{n:02d}.flac')]
+                tracks.append(t)
+        return SimpleNamespace(tracks=tracks[::-1])  # in no particular order
+
+    def test_only_the_disc_in_the_drive(self):
+        tracks, label, problem = self.plugin._album_tracks(self.album(), {'discid': 'disc-two'})
+        self.assertEqual(problem, '')
+        self.assertEqual(label, 'disc 2 of 2')
+        self.assertEqual([(t.number, t.path) for t in tracks],
+                         [(n, f'/music/2-{n:02d}.flac') for n in (1, 2, 3)])
+
+    def test_a_disc_not_on_the_release(self):
+        tracks, label, problem = self.plugin._album_tracks(self.album(), {'discid': 'other'})
+        self.assertEqual((tracks, label), ([], ''))
+        self.assertIn('not attached to any disc of this release', problem)
+
+    def test_a_single_disc(self):
+        album = SimpleNamespace(tracks=[FakeTrack(1)])
+        album.tracks[0].metadata.update({'~musicbrainz_discids': 'only', 'discnumber': '1',
+                                         'totaldiscs': '1'})
+        album.tracks[0].files = [SimpleNamespace(filename='/music/01.flac')]
+        tracks, label, problem = self.plugin._album_tracks(album, {'discid': 'only'})
+        self.assertEqual((len(tracks), label, problem), (1, '', ''))
+
+
 if __name__ == '__main__':
     unittest.main()

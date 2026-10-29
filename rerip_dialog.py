@@ -38,8 +38,9 @@ class ReRipDialog(QtWidgets.QDialog):
 
     def __init__(self, parent: Optional[QtWidgets.QWidget], config: Any, title: str,
                  tracks: list, toc: str, preselect: Optional[list] = None,
-                 log: Any = None, paranoia: Optional[dict] = None) -> None:
+                 log: Any = None, paranoia: Optional[dict] = None, disc: str = '') -> None:
         super().__init__(parent)
+        self.disc = disc  # which disc of the release, as rerip.disc_label puts it
         self.config = config  # the plugin's options
         self.tracks = tracks  # rerip.Track, in disc order
         self.toc = toc
@@ -61,9 +62,18 @@ class ReRipDialog(QtWidgets.QDialog):
         for d in (self._view, self._new, self._keep):
             os.mkdir(d)
 
-        self.setWindowTitle(f'Verify and re-rip: {title}')
+        self.setWindowTitle(f'Verify and re-rip: {title}, {disc}' if disc else f'Verify and re-rip: {title}')
         self.resize(900, 520)
         layout = QtWidgets.QVBoxLayout(self)
+        # The drive holds one disc at a time, so a release of several is
+        # verified and re-ripped a disc at a time.
+        self.disc_note = QtWidgets.QLabel(
+            f'This is {disc} of the release. Only its tracks are listed and re-ripped. For '
+            "another disc's tracks, put that disc in the drive and open this window again."
+            if disc else '')
+        self.disc_note.setWordWrap(True)
+        self.disc_note.setVisible(bool(disc))
+        layout.addWidget(self.disc_note)
         self.status = QtWidgets.QLabel()
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
@@ -116,7 +126,8 @@ class ReRipDialog(QtWidgets.QDialog):
         if self.preselect:
             self._tick(self.preselect)
             names = ', '.join(map(str, self.preselect))
-            self._idle(f'Tracks that did not verify: {names}. With the CD in the drive, '
+            cd = self.disc or 'the CD'
+            self._idle(f'Tracks that did not verify: {names}. With {cd} in the drive, '
                        'press Re-rip selected. A file is replaced only if its new rip verifies.')
         else:
             self.verify()

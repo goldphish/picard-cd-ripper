@@ -428,6 +428,36 @@ def title_of(path: str) -> str:
     return os.path.splitext(os.path.basename(path))[0]
 
 
+def _leading_number(text: str) -> int:
+    """The number a tag starts with ("2" in "2/3"), or 0."""
+    m = re.match(r'\s*(\d+)', text or '')
+    return int(m.group(1)) if m else 0
+
+
+def disc_label(discnumber: str, totaldiscs: str = '') -> str:
+    """Which disc of a release the tracks are on, as "disc 2 of 3".
+
+    discnumber may hold the total too ("2/3"). Empty for a release of one
+    disc, or when the tags don't say.
+    """
+    number = _leading_number(discnumber)
+    total = _leading_number(totaldiscs) or _leading_number((discnumber or '').partition('/')[2])
+    if not number or (total <= 1 and number <= 1):
+        return ''
+    return f'disc {number} of {total}' if total >= number else f'disc {number}'
+
+
+def disc_of(path: str) -> str:
+    """disc_label from a file's DISCNUMBER and TOTALDISCS tags."""
+    try:
+        from mutagen.flac import FLAC
+        tags = FLAC(path).tags or {}
+    except Exception:
+        return ''
+    first = lambda key: (tags.get(key) or [''])[0]
+    return disc_label(first('discnumber'), first('totaldiscs') or first('disctotal'))
+
+
 def toc_track_count(toc: str) -> Optional[int]:
     """The number of tracks in a "1 N leadout offsets..." TOC."""
     parts = toc.split()
