@@ -123,6 +123,42 @@ def line_up_args(opts: str, track: int, start: int, out: str, shift: int = 0) ->
     return with_sample_offset(args, shift) + ['-r', '--', span, out]
 
 
+def edge_shift(toc: str, track: int, shift: int) -> int:
+    """The part of shift a track can't be read with, or 0.
+
+    cdparanoia refuses a span that starts before the disc does or ends after
+    it, which a shift would make it read for the first track (shift < 0,
+    when it starts at the start of the disc) or the last (shift > 0). That
+    track is read at the drive's offset and shifted with shift_wav instead.
+    """
+    starts = toc_starts(toc)
+    if shift < 0 and track == 1 and starts and starts[0] * _SECTOR < -shift:
+        return shift
+    if shift > 0 and track == toc_track_count(toc):
+        return shift
+    return 0
+
+
+def shift_wav(path: str, shift: int) -> None:
+    """Make a WAV hold what reading it with shift more on the sample offset
+    would have: its audio moves shift samples earlier (later, if negative)
+    and keeps its length, with digital silence for what is beyond the disc.
+    """
+    import wave
+    with wave.open(path, 'rb') as w:
+        params = w.getparams()
+        frames = w.readframes(w.getnframes())
+    width = params.nchannels * params.sampwidth
+    silence = bytes(abs(shift) * width)
+    if shift > 0:
+        frames = frames[shift * width:] + silence
+    elif shift < 0:
+        frames = silence + frames[:shift * width]
+    with wave.open(path, 'wb') as w:
+        w.setparams(params)
+        w.writeframes(frames)
+
+
 def decode(flac: str, path: str) -> bytes:
     """A FLAC file's audio as raw little-endian samples."""
     import subprocess

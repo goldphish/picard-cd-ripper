@@ -126,6 +126,32 @@ class ArgsTest(unittest.TestCase):
             {'track': 1, 'verified': False}, {'track': 2, 'verified': False}]}), [])
         self.assertEqual(rerip.failing({'status': 'NONE'}), [])
 
+    def test_edge_shift(self):
+        toc = '1 3 1950 150 750 1350'
+        self.assertEqual(rerip.edge_shift(toc, 1, -42), -42)
+        self.assertEqual(rerip.edge_shift(toc, 2, -42), 0)
+        self.assertEqual(rerip.edge_shift(toc, 3, -42), 0)
+        self.assertEqual(rerip.edge_shift(toc, 1, 42), 0)
+        self.assertEqual(rerip.edge_shift(toc, 3, 42), 42)
+        # A hidden track before track 1 leaves room to read before it.
+        self.assertEqual(rerip.edge_shift('1 3 1950 300 750 1350', 1, -42), 0)
+        self.assertEqual(rerip.edge_shift('', 1, -42), 0)
+
+    def test_shift_wav(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        path = os.path.join(d, 't.wav')
+        for shift, want in ((-2, [0, 0, 1, 2, 3]), (2, [3, 4, 5, 0, 0])):
+            with wave.open(path, 'wb') as w:
+                w.setnchannels(2)
+                w.setsampwidth(2)
+                w.setframerate(44100)
+                w.writeframes(b''.join(struct.pack('<hh', i, i) for i in (1, 2, 3, 4, 5)))
+            rerip.shift_wav(path, shift)
+            with wave.open(path, 'rb') as w:
+                got = struct.unpack('<10h', w.readframes(w.getnframes()))
+            self.assertEqual(list(got[::2]), want)
+
     def test_toc_track_count(self):
         self.assertEqual(rerip.toc_track_count('1 12 200000 150'), 12)
         self.assertIsNone(rerip.toc_track_count(''))
@@ -215,6 +241,9 @@ if cfg.get('inverted'):
     shift = -shift
 starts = cfg['starts']
 def audio(begin, end):
+    if begin + shift < 0 or (end + shift) * 4 > len(disc):
+        sys.stderr.write('Error parsing span argument\\n')
+        sys.exit(1)
     return disc[(begin + shift) * 4:(end + shift) * 4]
 if '-r' in args:
     m = re.fullmatch(r'(\\d+)\\[(\\d+):(\\d+)\\.(\\d+)\\]-(\\d+)\\[(\\d+):(\\d+)\\.(\\d+)\\]', args[-2])
@@ -431,11 +460,13 @@ class DialogTest(unittest.TestCase):
         self._wait(d)
         self.assertIn('file replaced', self._result(d, 3))
 
-    def _disc(self, files_shift):
+    def _disc(self, files_shift, pad=20 * 588):
         """Put a disc in the fake drive whose files are files_shift samples
-        later than the drive reads it, as if ripped at another offset."""
+        later than the drive reads it, as if ripped at another offset. The
+        drive can read pad samples before the first track and after the last;
+        the files have silence where it can't."""
         self.cdparanoia = self._script(os.path.join(self.dir, 'bin'), 'cdparanoia', FAKE_DISC_CDPARANOIA)
-        sectors, pad = 420, 20 * 588
+        sectors = 420
         rng = random.Random(2)
         disc = rng.randbytes((pad * 2 + 3 * sectors * 588) * 4)
         starts = [pad + i * sectors * 588 for i in range(4)]
@@ -448,7 +479,8 @@ class DialogTest(unittest.TestCase):
                 w.setnchannels(2)
                 w.setsampwidth(2)
                 w.setframerate(44100)
-                w.writeframes(disc[(a - files_shift) * 4:(b - files_shift) * 4])
+                edge = max(0, files_shift - a)
+                w.writeframes(bytes(edge * 4) + disc[(a - files_shift + edge) * 4:(b - files_shift) * 4])
             encode(wav, t.path, TITLE=t.title, TRACKNUMBER=str(t.number))
         self.before = [read(t.path) for t in self.tracks]
         return {'disc': disc_path, 'starts': starts}
@@ -483,6 +515,23 @@ class DialogTest(unittest.TestCase):
         self._rerip(d, 3)
         with open(self.cfg_path + '.cdparanoia') as f:
             self.assertEqual(len(f.readlines()), 4)
+
+    def test_first_track_rerips_without_reading_before_the_disc(self):
+        # With -42, cdparanoia would read before the first track's first
+        # sample; it refuses that span, so the shift is made up afterwards.
+        disc = self._disc(files_shift=42, pad=0)
+        d = self._disc_dialog(disc)
+        d.start()
+        self._wait(d)
+        before = rerip.decode('flac', self.tracks[0].path)
+        self._rerip(d, 1)
+        self.assertEqual(d.shift, -42, d.output.toPlainText())
+        self.assertIn('file replaced', self._result(d, 1), d.output.toPlainText())
+        self.assertEqual(rerip.decode('flac', self.tracks[0].path), before)
+        with open(self.cfg_path + '.cdparanoia') as f:
+            runs = [json.loads(line) for line in f]
+        self.assertNotIn('-O', runs[-1])
+        self.assertIn('read past the start of the disc', d.output.toPlainText())
 
     def test_files_in_line_need_no_shift(self):
         d = self._disc_dialog(self._disc(files_shift=0))
