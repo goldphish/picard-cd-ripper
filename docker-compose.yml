@@ -22,6 +22,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile-picard
+      ssh:
+        - default
     container_name: picard
     ports:
       - "6800:5800"
