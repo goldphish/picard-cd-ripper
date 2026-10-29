@@ -62,22 +62,25 @@ class VerifyCD(BaseAction):
         except bridge.BridgeError as e:
             QMessageBox.warning(self.tagger.window, 'Verify and re-rip', f'Put the CD in the drive: {e}')
             return
-        tracks, problem = _album_tracks(album, disc)
+        tracks, label, problem = _album_tracks(album, disc)
         if problem:
             QMessageBox.warning(self.tagger.window, 'Verify and re-rip', problem)
             return
-        _open_dialog(self.api, album.metadata['album'], tracks, disc['toc'])
+        _open_dialog(self.api, album.metadata['album'], tracks, disc['toc'], disc=label)
 
 
 def _album_tracks(album: Any, disc: dict) -> tuple:
     """The album's tracks on the disc in the drive, with their files.
 
-    Returns (tracks, problem): problem says why they can't be verified.
+    Of a release of several discs, only the tracks of the one in the drive.
+    Returns (tracks, disc label, problem): problem says why they can't be
+    verified.
     """
     on_disc = [t for t in album.tracks if disc['discid'] in t.metadata['~musicbrainz_discids']]
     if not on_disc:
-        return [], (f'The CD in the drive ({disc["discid"]}) is not attached to this release '
-                    'in MusicBrainz. Load the release that matches it.')
+        which = 'any disc of this release' if _disc_label(album.tracks) else 'this release'
+        return [], '', (f'The CD in the drive ({disc["discid"]}) is not attached to {which} '
+                        'in MusicBrainz. Load the release that matches it.')
     on_disc.sort(key=lambda t: int(t.metadata['tracknumber'] or 0))
     tracks, missing = [], []
     for i, t in enumerate(on_disc, 1):
@@ -87,8 +90,16 @@ def _album_tracks(album: Any, disc: dict) -> tuple:
             continue
         tracks.append(rerip.Track(i, t.metadata['title'], files[0].filename))
     if missing:
-        return [], f'Each track needs exactly one file. Tracks without: {", ".join(missing)}.'
-    return tracks, ''
+        return [], '', f'Each track needs exactly one file. Tracks without: {", ".join(missing)}.'
+    return tracks, _disc_label(on_disc), ''
+
+
+def _disc_label(tracks: list) -> str:
+    """Which disc of the release Picard tracks are on (see rerip.disc_label)."""
+    if not tracks:
+        return ''
+    m = tracks[0].metadata
+    return rerip.disc_label(m.get('discnumber', ''), m.get('totaldiscs', ''))
 
 
 # Open Verify and re-rip windows, kept from garbage collection until closed.
@@ -96,10 +107,10 @@ _dialogs: list = []
 
 
 def _open_dialog(api: PluginApi, title: str, tracks: list, toc: str,
-                 preselect: Optional[list] = None) -> None:
+                 preselect: Optional[list] = None, disc: str = '') -> None:
     """Open a Verify and re-rip window beside Picard's."""
     dialog = rerip_dialog.ReRipDialog(api.tagger.window, api.plugin_config, title, tracks, toc,
-                                      preselect, api.logger)
+                                      preselect, api.logger, disc=disc)
     dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
     _dialogs.append(dialog)
     dialog.finished.connect(lambda *_: _dialogs.remove(dialog))
@@ -112,7 +123,7 @@ def _open_rerip(api: PluginApi, files: list, preselect: list, disc: dict) -> Non
     """Open the Verify and re-rip window for files, at cdcheckd's request."""
     tracks = [rerip.Track(i, rerip.title_of(p), p) for i, p in enumerate(files, 1)]
     title = os.path.basename(os.path.dirname(files[0]))
-    _open_dialog(api, title, tracks, disc['toc'], preselect)
+    _open_dialog(api, title, tracks, disc['toc'], preselect, rerip.disc_of(files[0]))
 
 
 class CDRipper(QtCore.QObject):
@@ -169,7 +180,8 @@ class CDRipper(QtCore.QObject):
         paranoia = {t.number: self._paranoia.track(t.number) for t in tracks}
         dialog = rerip_dialog.ReRipDialog(self.tagger.window, self.api.plugin_config,
                                           self.album.metadata['album'], tracks, self.toc,
-                                          log=self.log, paranoia=paranoia)
+                                          log=self.log, paranoia=paranoia,
+                                          disc=_disc_label([track for _, track in files]))
         QtCore.QTimer.singleShot(0, dialog.start)
         dialog.exec()
 

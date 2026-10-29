@@ -71,6 +71,12 @@ those tracks. Rather than ripping the whole CD again:
    verifies, by AccurateRip or, track by track, by the CUETools DB.
    Otherwise the original is kept.
 
+A release of several discs is verified and re-ripped a disc at a time,
+since the drive holds one. The window lists only the tracks of the disc in
+the drive (matched by its disc ID to a medium of the release), names it in
+the title ("disc 2 of 3"), and says so above the table. For another disc's
+tracks, put that disc in and open the window again.
+
 The *cdparanoia* column shows what cdparanoia ran into on each track's last
 rip: skips (parts it gave up on), drive errors, scratches and the
 corrections it made. The plugin runs cdparanoia with `-e` to get this, and
