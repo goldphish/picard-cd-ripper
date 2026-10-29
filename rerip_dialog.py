@@ -317,12 +317,15 @@ class ReRipDialog(QtWidgets.QDialog):
             return
         n, rest = numbers[0], numbers[1:]
         self._busy(f'Ripping track {n}…')
-        args = rerip.cdparanoia_args(self.config['cdparanoia_opts'], n, self.shift or 0)
+        shift = self.shift or 0
+        edge = rerip.edge_shift(self.toc, n, shift)
+        args = rerip.cdparanoia_args(self.config['cdparanoia_opts'], n, shift - edge)
         report = rerip.ParanoiaReport()
-        self._run(CDPARANOIA, args, lambda code, _: self._ripped(n, code, report, rest, done),
+        self._run(CDPARANOIA, args, lambda code, _: self._ripped(n, code, report, rest, done, edge),
                   show=report.feed, flush=report.flush)
 
-    def _ripped(self, n: int, code: int, report: rerip.ParanoiaReport, rest: list, done: dict) -> None:
+    def _ripped(self, n: int, code: int, report: rerip.ParanoiaReport, rest: list, done: dict,
+                edge: int = 0) -> None:
         self.paranoia[n] = report.track()
         self.output.appendPlainText(f'cdparanoia, track {n}: {rerip.paranoia_summary(self.paranoia[n])}')
         self._show_paranoia()
@@ -331,6 +334,17 @@ class ReRipDialog(QtWidgets.QDialog):
             self._idle(f'cdparanoia could not rip track {n} (exit code {code}). '
                        'Is the CD in the drive?')
             return
+        if edge:
+            try:
+                rerip.shift_wav(wav, edge)
+            except Exception as e:  # wave's errors
+                self._idle(f'Could not shift track {n} to line it up with the files: {e}')
+                return
+            where = 'start' if edge < 0 else 'end'
+            self.output.appendPlainText(
+                f'With {edge:+d} on the sample offset, track {n} would be read past the {where} '
+                f"of the disc, so it was read at the drive's offset and moved {abs(edge)} samples "
+                'instead, with silence for the samples beyond the disc.')
         out = os.path.join(self._new, f'{n:02d}.flac')
         self._busy(f'Encoding track {n}…')
         args = rerip.flac_args(self.config['flac_opts'], wav, out)
