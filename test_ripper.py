@@ -165,7 +165,6 @@ class RipAgainTest(unittest.TestCase):
         self.assertEqual(os.listdir(self.library), [])
 
 
-
 class AlbumTracksTest(unittest.TestCase):
     """Of a release of several discs, only the one in the drive's tracks."""
 
@@ -206,6 +205,7 @@ class AlbumTracksTest(unittest.TestCase):
         album.tracks[0].files = [SimpleNamespace(filename='/music/01.flac')]
         tracks, label, problem = self.plugin._album_tracks(album, {'discid': 'only'})
         self.assertEqual((len(tracks), label, problem), (1, '', ''))
+
 
 if __name__ == '__main__':
     unittest.main()
