@@ -43,6 +43,13 @@ When the verifier is installed, the new rip is verified as soon as you click
 *Finished* (see below), while the CD is still in the drive. Save in Picard
 after closing that window: until then the files are in a temporary directory.
 
+Each file keeps only its own disc's `MUSICBRAINZ_DISCID`. Picard writes a
+disc ID only to the disc MusicBrainz attaches it to, but with *Clear existing
+tags* off it leaves an older one in place, so a file could still carry the ID
+of another disc of the release. The plugin removes such an ID when the file
+is matched to a track and again when it is saved. An ID the release doesn't
+list at all is kept, as MusicBrainz may not have it yet.
+
 cdparanoia, flac and accuraterip-verify command line options can be changed
 under *Options → Plugins → CD Ripper*. Set `--offset` in the verifier's
 options to your drive's read offset (6 by default). Settings from the Picard 2 version of the
@@ -125,7 +132,7 @@ small HTTP bridge in this plugin (see `DESIGN.md` in that repository):
 |---|---|
 | `GET /status` | Picard and plugin versions, and whether "Clear existing tags" is on |
 | `GET /disc` | Reads the CD in the drive: disc ID, TOC, MCN, ISRCs |
-| `POST /load` | `{paths[], release?, discid?}`: loads the release with the disc ID and adds the files to it, moving them off the release their tags name if it differs, so that saving writes `MUSICBRAINZ_DISCID` |
+| `POST /load` | `{paths[], release?, discid?, discids[]?}`: loads the release with the disc IDs (each disc's, for a release of several) and adds the files to it, moving them off the release their tags name if it differs, so that saving writes `MUSICBRAINZ_DISCID` |
 | `POST /rerip` | `{files[], tracks[], discid?}`: opens the Verify and re-rip window for the files (in track order) with `tracks` ticked. Answers 409 unless the CD in the drive is `discid` with as many tracks as files |
 
 Every request needs `Authorization: Bearer <token>`. The bridge is off by

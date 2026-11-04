@@ -16,6 +16,10 @@ class FakeAlbum:
     def __init__(self, id):
         self.id = id
         self.files = []
+        self.discids = []
+
+    def add_discid(self, discid):
+        self.discids.append(discid)
 
     def iterfiles(self):
         return iter(self.files)
@@ -107,6 +111,17 @@ class BridgeTest(unittest.TestCase):
             code, _ = self.call('POST', '/load', {'paths': [d], 'release': 'r1', 'discid': 'd1'})
             self.assertEqual(code, 200)
             self.assertEqual(self.tagger.calls, [('load_album', 'r1', 'd1'), ('add_paths', [d])])
+
+    def test_load_every_disc_id(self):
+        # The release's discs each have their own ID: Picard gets them all,
+        # and tags each disc with its own.
+        with tempfile.TemporaryDirectory() as d:
+            code, _ = self.call('POST', '/load', {'paths': [d], 'release': 'r1', 'discid': 'd1',
+                                                  'discids': ['d1', 'd2']})
+            self.assertEqual(code, 200)
+            self.assertEqual(self.tagger.calls, [('load_album', 'r1', 'd1'), ('add_paths', [d])])
+            self.assertEqual(self.tagger.albums['r1'].discids, ['d2'])
+            self.assertEqual(self.call('POST', '/load', {'paths': [d], 'release': 'r1', 'discids': 'd1'})[0], 400)
 
     def test_load_moves_files_to_requested_release(self):
         # The files are tagged with another edition: Picard files them there,

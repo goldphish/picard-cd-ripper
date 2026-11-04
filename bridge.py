@@ -5,8 +5,10 @@ Endpoints (all JSON, all need ``Authorization: Bearer <token>``):
 
     GET  /status  Picard and plugin versions, and the "Clear existing tags" option.
     GET  /disc    Read the CD in the drive: disc ID, TOC string, MCN and ISRCs.
-    POST /load    {paths[], release?, discid?}: load a release and add the files
-                  to it, with the disc ID so that saving writes MUSICBRAINZ_DISCID.
+    POST /load    {paths[], release?, discid?, discids[]?}: load a release and add
+                  the files to it, with the disc IDs (one per disc of the
+                  release, say) so that saving writes each disc's
+                  MUSICBRAINZ_DISCID.
     POST /rerip   {files[], tracks[], discid?}: open the Verify and re-rip window
                   for the files (in track order) with the tracks ticked. The CD
                   in the drive must be discid.
@@ -72,10 +74,20 @@ class Handlers:
             raise BridgeError(404, f'no such path: {missing[0]}')
         release = req.get('release') or ''
         discid = req.get('discid') or ''
+        discids = req.get('discids') or []
         if not isinstance(release, str) or not isinstance(discid, str):
             raise BridgeError(400, 'release and discid must be strings')
+        if not isinstance(discids, list) or not all(isinstance(d, str) and d for d in discids):
+            raise BridgeError(400, 'discids must be a list of disc IDs')
+        discids = list(dict.fromkeys(([discid] if discid else []) + discids))
         tagger = self.api.tagger
-        album = tagger.load_album(release, discid=discid or None) if release else None
+        album = None
+        if release:
+            # Picard tags each disc's tracks with the IDs MusicBrainz
+            # attaches to that disc, so every disc's ID can be given.
+            album = tagger.load_album(release, discid=discids[0] if discids else None)
+            for d in discids[1:]:
+                album.add_discid(d)
         tagger.add_paths(paths)
         if album is not None:
             self._settle(album, paths, SETTLE_TIMEOUT_MS)
