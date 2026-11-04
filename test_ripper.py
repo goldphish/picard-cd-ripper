@@ -207,5 +207,76 @@ class AlbumTracksTest(unittest.TestCase):
         self.assertEqual((len(tracks), label, problem), (1, '', ''))
 
 
+class FakeMetadata(dict):
+    """Picard's Metadata, as far as the disc ID clean-up uses it."""
+    def __init__(self, **tags):
+        super().__init__({k: v if isinstance(v, list) else [v] for k, v in tags.items()})
+        self.deleted = set()
+
+    def getall(self, name):
+        return list(self.get(name, []))
+
+    def __setitem__(self, name, values):
+        super().__setitem__(name, values if isinstance(values, list) else [values])
+
+    def delete(self, name):
+        self.pop(name, None)
+        self.deleted.add(name)
+
+
+class DiscIDCleanupTest(unittest.TestCase):
+    """A file keeps a disc ID only if it is its own disc's, or unknown."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.plugin, cls.app = load_plugin()
+        except ImportError as e:
+            raise unittest.SkipTest(f'PyQt6: {e}')
+
+    def setUp(self):
+        self.album = SimpleNamespace(tracks=[])
+        for discid in ('disc-one', 'disc-two'):
+            t = SimpleNamespace(album=self.album, metadata=FakeMetadata(**{'~musicbrainz_discids': discid}))
+            self.album.tracks.append(t)
+        self.disc1 = self.album.tracks[0]
+
+    def file(self, *discids):
+        tags = {'musicbrainz_discid': list(discids)} if discids else {}
+        return SimpleNamespace(filename='/music/1-01.flac', metadata=FakeMetadata(**tags),
+                               parent_item=self.disc1, update=lambda: None)
+
+    def test_another_discs_id_is_removed(self):
+        f = self.file('disc-two')
+        self.assertTrue(self.plugin._drop_other_disc_id(self.disc1, f))
+        self.assertNotIn('musicbrainz_discid', f.metadata)
+        self.assertEqual(f.metadata.deleted, {'musicbrainz_discid'})
+
+    def test_own_and_unknown_ids_are_kept(self):
+        for ids in (('disc-one',), ('not-on-musicbrainz-yet',), ()):
+            f = self.file(*ids)
+            self.assertFalse(self.plugin._drop_other_disc_id(self.disc1, f), ids)
+            self.assertEqual(f.metadata.getall('musicbrainz_discid'), list(ids))
+
+    def test_only_the_other_discs_id_of_several(self):
+        f = self.file('disc-one', 'disc-two')
+        self.assertTrue(self.plugin._drop_other_disc_id(self.disc1, f))
+        self.assertEqual(f.metadata.getall('musicbrainz_discid'), ['disc-one'])
+
+    def test_hooks(self):
+        api = SimpleNamespace(logger=SimpleNamespace(info=lambda msg: None))
+        f = self.file('disc-two')
+        self.plugin._on_file_added(api, self.disc1, f)
+        self.assertNotIn('musicbrainz_discid', f.metadata)
+        f = self.file('disc-two')
+        self.plugin._on_file_saving(api, f)
+        self.assertNotIn('musicbrainz_discid', f.metadata)
+        # A file in a cluster, not on a release, is left alone.
+        f.metadata['musicbrainz_discid'] = 'disc-two'
+        f.parent_item = SimpleNamespace(files=[])
+        self.plugin._on_file_saving(api, f)
+        self.assertEqual(f.metadata.getall('musicbrainz_discid'), ['disc-two'])
+
+
 if __name__ == '__main__':
     unittest.main()

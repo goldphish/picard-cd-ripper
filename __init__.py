@@ -94,6 +94,45 @@ def _album_tracks(album: Any, disc: dict) -> tuple:
     return tracks, _disc_label(on_disc), ''
 
 
+def _drop_other_disc_id(track: Any, file: Any) -> bool:
+    """Remove from the file a MUSICBRAINZ_DISCID of another disc of its release.
+
+    Picard writes a disc ID only to the tracks of the disc MusicBrainz
+    attaches it to, but leaves an earlier one in the file alone (with "Clear
+    existing tags" off, as cdcheckd needs). A file can so carry the ID of
+    another disc of the release, from a save on the wrong release, say. An
+    ID the release does not list at all is kept: MusicBrainz may not know it
+    yet. Returns whether the tag changed.
+    """
+    album = getattr(track, 'album', None)
+    if album is None:
+        return False
+    ours = set(track.metadata.getall('~musicbrainz_discids'))
+    release = {d for t in album.tracks for d in t.metadata.getall('~musicbrainz_discids')}
+    tagged = file.metadata.getall('musicbrainz_discid')
+    keep = [d for d in tagged if d in ours or d not in release]
+    if keep == tagged:
+        return False
+    if keep:
+        file.metadata['musicbrainz_discid'] = keep
+    else:
+        file.metadata.delete('musicbrainz_discid')
+    return True
+
+
+def _on_file_added(api: PluginApi, track: Any, file: Any) -> None:
+    if _drop_other_disc_id(track, file):
+        api.logger.info(f'Removed the disc ID of another disc from {file.filename}')
+        file.update()
+
+
+def _on_file_saving(api: PluginApi, file: Any) -> None:
+    # Again at saving, in case the file's metadata was rebuilt since.
+    track = getattr(file, 'parent_item', None)
+    if track is not None and hasattr(track, 'album') and _drop_other_disc_id(track, file):
+        api.logger.info(f'Removed the disc ID of another disc from {file.filename}')
+
+
 def _disc_label(tracks: list) -> str:
     """Which disc of the release Picard tracks are on (see rerip.disc_label)."""
     if not tracks:
@@ -489,4 +528,6 @@ def enable(api: PluginApi) -> None:
     api.register_options_page(CDRipperOptionsPage)
     api.register_album_action(RipCD)
     api.register_album_action(VerifyCD)
+    api.register_file_post_addition_to_track_processor(_on_file_added)
+    api.register_file_pre_save_processor(_on_file_saving)
     _restart_bridge(api)
